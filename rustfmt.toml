@@ -1,0 +1,5 @@
+indent_style = "Block"
+edition = "2021"
+version = "Two"
+hard_tabs = true
+max_width = 120

@@ -1,0 +1,75 @@
+[package]
+name = "wgmqc"
+version = "0.1.0"
+edition = "2021"
+description = "Use the standard mqtt protocol as the distribution protocol to build a wireguard network"
+keywords = ["wireguard", "mqtt"]
+
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+defguard_wireguard_rs = "0.4"
+rumqttc = { version = "0.24", features = ["websocket", "url"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.42", features = ["fs", "net", "sync", "signal", "rt-multi-thread"] }
+log = "0.4"
+x25519-dalek = { version = "2.0", features = ["getrandom", "static_secrets"] }
+base64 = "0.22"
+serde_yaml = "0.9.34"
+env_logger = "0.11"
+arc-swap = "1.7"
+reqwest = { version = "0.12", features = ["http2", "charset", "rustls-tls"], default-features = false }
+stunclient = "0.4"
+regex = "1.11"
+netdev = "0.31"
+natpmp-ng = "0.5"
+igd-next = "0.15"
+ipnet = {version =  "2.10", features = ["serde"] }
+hostname = "0.4"
+url = "2"
+serde_json = "1.0"
+xeddsa = "1.0.2"
+rand = "0.8.5"
+ed25519 = "2.2.3"
+tokio-util = "0.7"
+socket2 = "0.5.8"
+anyhow = "1.0"
+
+[profile.release.package."*"]
+debug = false
+opt-level = 3
+
+[profile.release]
+panic = "abort"
+strip = true
+lto = true
+debug = false
+codegen-units = 1
+
+[target.'cfg(target_os="linux")'.dependencies]
+libc = "0.2"
+libbpf-rs = "0.24"
+libbpf-sys = "1.5"
+
+[target.'cfg(not(target_arch="x86_64"))'.dependencies]
+libbpf-sys = { version = "1.5", features = ["bindgen"] }
+
+[build-dependencies]
+libbpf-cargo = "0.24"
+
+
+[package.metadata.deb]
+maintainer = "wushengshijie <wushengshijie@outlook.com>"
+copyright = "2024, wushengshijie <wushengshijie@outlook.com>"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+A simple wireguard vpn manager  \
+building Debian packages from Rust projects."""
+depends = "$auto"
+section = "net"
+priority = "optional"
+assets = [
+    # both syntaxes are equivalent:
+    ["target/release/wgmqc", "usr/bin/", "755"],
+    { source = "README.md", dest = "usr/share/doc/wgmqc/README", mode = "644"},
+]
