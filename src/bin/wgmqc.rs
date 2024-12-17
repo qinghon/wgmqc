@@ -73,6 +73,8 @@ enum SubNetCmd {
 	},
 	Share {
 		net: Option<String>,
+		#[arg(long, help = "export admin permission key")]
+		admin: Option<bool>,
 	},
 	Join {
 		config: String,
@@ -150,16 +152,7 @@ fn subcmd_subnet(config_dir: PathBuf, subnet: SubNet) {
 				std::process::exit(17);
 			}
 			let (pubkey, prikey) = util::new_key_pair();
-			let peer_new_name;
-			if peer_name.is_none() {
-				peer_new_name = match hostname::get() {
-					Ok(v) => Some(v.to_str().unwrap_or("").to_string()),
-					Err(_) => None,
-				};
-			} else {
-				peer_new_name = peer_name
-			}
-
+			let peer_new_name = peer_name_get(peer_name);
 			let mut config = config::WgConfig::default();
 
 			config.network.broker = broker;
@@ -184,7 +177,7 @@ fn subcmd_subnet(config_dir: PathBuf, subnet: SubNet) {
 
 			fs::write(abs_net_file, yaml).expect("cannot write network");
 		}
-		SubNetCmd::Share { net } => {
+		SubNetCmd::Share { net, admin } => {
 			let nets = config::load_all_net(&config_dir);
 
 			let dump = match (net, nets.len()) {
@@ -204,7 +197,9 @@ fn subcmd_subnet(config_dir: PathBuf, subnet: SubNet) {
 				std::process::exit(17);
 			}
 			let mut conf = dump.clone().unwrap().network.clone();
-			conf.broker_admin_prikey = None;
+			if !admin.unwrap_or(false) {
+				conf.broker_admin_prikey = None;
+			}
 			// is id
 			conf.broker_admin_pubkey = None;
 			conf.interface_policy = None;
@@ -221,21 +216,11 @@ fn subcmd_subnet(config_dir: PathBuf, subnet: SubNet) {
 			peer_name,
 			peer_ip,
 		} => {
-			let net_yaml = base64::prelude::BASE64_STANDARD
-				.decode(config.clone())
-				.expect("cannot decode config");
+			let net_yaml = base64::prelude::BASE64_STANDARD.decode(config.clone()).expect("cannot decode config");
 			let conf: config::Network = serde_yaml::from_slice(&net_yaml).expect("cannot serde from yaml");
 			debug!("load yaml: \n{:?}", conf);
 
-			let peer_new_name;
-			if peer_name.is_none() {
-				peer_new_name = match hostname::get() {
-					Ok(v) => Some(v.to_str().unwrap_or("").to_string()),
-					Err(_) => None,
-				};
-			} else {
-				peer_new_name = peer_name
-			}
+			let peer_new_name = peer_name_get(peer_name);
 
 			let mut wg_conf = config::WgConfig {
 				network: conf,
@@ -348,6 +333,7 @@ fn subcmd_subpeer(config_dir: PathBuf, sub_peer: SubPeer) {
 			for pnet in print_nets {
 				if pnet.status.is_none() {
 					println!("{}\t<none>\t<none>\t<none>", pnet.network.name);
+					continue;
 				}
 				for peer in pnet.status.as_ref().unwrap().peers.iter() {
 					println!(
@@ -363,4 +349,18 @@ fn subcmd_subpeer(config_dir: PathBuf, sub_peer: SubPeer) {
 		SubPeerCmd::Allow { .. } => {}
 		SubPeerCmd::Deny { .. } => {}
 	}
+}
+
+fn peer_name_get(setname: Option<String>) -> Option<String> {
+	if setname.is_some() {
+		return setname;
+	}
+	if let Ok(name) = hostname::get() {
+		if let Ok(s) = name.into_string() {
+			return Some(s);
+		} else {
+			return None;
+		}
+	}
+	None
 }

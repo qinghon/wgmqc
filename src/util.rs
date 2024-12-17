@@ -75,10 +75,8 @@ pub fn safe_write_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, contents: C) -> 
 pub fn filter_avail_interface(policy: &InterfacePolicy) -> Vec<netdev::Interface> {
 	if policy.interface.is_some() {
 		let intfname = policy.interface.clone().unwrap();
-		let intf: Vec<netdev::Interface> = netdev::get_interfaces()
-			.into_iter()
-			.filter(|x| x.name.eq(&intfname))
-			.collect();
+		let intf: Vec<netdev::Interface> =
+			netdev::get_interfaces().into_iter().filter(|x| x.name.eq(&intfname)).collect();
 		if intf.is_empty() {
 			return vec![];
 		}

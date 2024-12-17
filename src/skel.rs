@@ -51,20 +51,10 @@ impl<'obj> Instance<'obj> {
 	}
 	pub fn add_port_pair(&mut self, from: u16, to: u16) -> Result<()> {
 		let from_slice = u16::to_ne_bytes(from);
-		let to_slice = (0..libbpf_rs::num_possible_cpus()?)
-			.map(|_| u16::to_ne_bytes(to).to_vec())
-			.collect::<Vec<_>>();
-		match self
-			.skel
-			.maps
-			.sock_in_map
-			.lookup_percpu(&from_slice, libbpf_rs::MapFlags::ANY)
-		{
+		let to_slice = (0..libbpf_rs::num_possible_cpus()?).map(|_| u16::to_ne_bytes(to).to_vec()).collect::<Vec<_>>();
+		match self.skel.maps.sock_in_map.lookup_percpu(&from_slice, libbpf_rs::MapFlags::ANY) {
 			Ok(_) => {
-				self.skel
-					.maps
-					.sock_in_map
-					.update_percpu(&from_slice, &to_slice, libbpf_rs::MapFlags::ANY)?;
+				self.skel.maps.sock_in_map.update_percpu(&from_slice, &to_slice, libbpf_rs::MapFlags::ANY)?;
 			}
 			Err(e) => {
 				error!("Failed to lookup port: {:?}", e);
@@ -80,20 +70,10 @@ impl<'obj> Instance<'obj> {
 
 	pub fn add_out_port_pair(&mut self, from: u16, to: u16) -> Result<()> {
 		let from_slice = u16::to_ne_bytes(from);
-		let to_slice = (0..libbpf_rs::num_possible_cpus()?)
-			.map(|_| u16::to_ne_bytes(to).to_vec())
-			.collect::<Vec<_>>();
-		match self
-			.skel
-			.maps
-			.sock_out_map
-			.lookup_percpu(&from_slice, libbpf_rs::MapFlags::ANY)
-		{
+		let to_slice = (0..libbpf_rs::num_possible_cpus()?).map(|_| u16::to_ne_bytes(to).to_vec()).collect::<Vec<_>>();
+		match self.skel.maps.sock_out_map.lookup_percpu(&from_slice, libbpf_rs::MapFlags::ANY) {
 			Ok(_) => {
-				self.skel
-					.maps
-					.sock_out_map
-					.update_percpu(&from_slice, &to_slice, libbpf_rs::MapFlags::ANY)?;
+				self.skel.maps.sock_out_map.update_percpu(&from_slice, &to_slice, libbpf_rs::MapFlags::ANY)?;
 			}
 			Err(e) => {
 				error!("Failed to lookup port: {:?}", e);
@@ -108,9 +88,7 @@ impl<'obj> Instance<'obj> {
 	}
 
 	pub fn add_localip(&mut self, ip: IpAddr) -> Result<()> {
-		let value = (0..libbpf_rs::num_possible_cpus()?)
-			.map(|_| vec![0u8; 1])
-			.collect::<Vec<_>>();
+		let value = (0..libbpf_rs::num_possible_cpus()?).map(|_| vec![0u8; 1]).collect::<Vec<_>>();
 		let mut ip_bytes: [u8; 16] = [0; 16];
 		match ip {
 			IpAddr::V4(ip4) => {
@@ -120,10 +98,7 @@ impl<'obj> Instance<'obj> {
 				ip_bytes.copy_from_slice(v.octets().as_ref());
 			}
 		}
-		self.skel
-			.maps
-			.allow_ips
-			.update_percpu(&ip_bytes, &value, libbpf_rs::MapFlags::ANY)?;
+		self.skel.maps.allow_ips.update_percpu(&ip_bytes, &value, libbpf_rs::MapFlags::ANY)?;
 
 		Ok(())
 	}
@@ -131,7 +106,7 @@ impl<'obj> Instance<'obj> {
 		let mut ip_bytes: [u8; 16] = [0; 16];
 		match ip {
 			IpAddr::V4(ip4) => {
-				ip_bytes.copy_from_slice(ip4.octets().as_ref());
+				ip_bytes[0..4].clone_from_slice(&ip4.octets());
 			}
 			IpAddr::V6(v) => {
 				ip_bytes.copy_from_slice(v.octets().as_ref());

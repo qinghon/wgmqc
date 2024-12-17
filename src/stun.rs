@@ -46,7 +46,7 @@ pub async fn stun_do_trans(
 	laddr: SocketAddr,
 	raddr: Vec<String>,
 	udpsock: Option<(&UdpSocket, u16)>,
-) -> io::Result<(SocketAddr, StunType)> {
+) -> io::Result<(Vec<SocketAddr>, StunType)> {
 	if raddr.is_empty() {
 		return Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "addr is empty"));
 	}
@@ -81,7 +81,7 @@ pub async fn stun_do_trans(
 				info!("pubaddr {}", pubaddr);
 				ok_num += 1;
 				if pubaddr == real_laddr {
-					return Ok((pubaddr, StunType::Public));
+					return Ok((vec![pubaddr], StunType::Public));
 				}
 
 				public_addrs.push(pubaddr);
@@ -98,6 +98,7 @@ pub async fn stun_do_trans(
 			}
 		}
 	}
+
 	match public_addrs.len() {
 		0 => {
 			return Err(io::Error::new(
@@ -108,26 +109,32 @@ pub async fn stun_do_trans(
 		1 => {
 			let addr = public_addrs[0];
 			if addr.port() == real_laddr.port() {
-				return Ok((addr, StunType::FullCone));
+				return Ok((vec![addr], StunType::FullCone));
 			} else {
-				return Ok((addr, StunType::RestrictedCone));
+				return Ok((vec![addr], StunType::RestrictedCone));
 			}
 		}
 		_ => {
+			let mut stun_type = StunType::Blocked;
 			if public_addrs.iter().all(|&x| x == public_addrs[0]) {
-				return Ok((public_addrs[0], StunType::FullCone));
+				stun_type = StunType::FullCone;
 			}
 			let ports: Vec<u16> = public_addrs.iter().map(|x| x.port()).collect();
 			if ports.iter().all(|&x| x == ports[0]) {
-				return Ok((public_addrs[0], StunType::FullCone));
+				stun_type = StunType::FullCone;
 			}
 			if ports.iter().all(|&x| ports.iter().filter(|&&y| x == y).count() == 1) {
-				return Ok((public_addrs[0], StunType::Symmetric));
+				stun_type = StunType::Symmetric;
+			}
+			public_addrs.sort();
+			public_addrs.dedup();
+			if stun_type != StunType::Blocked {
+				return Ok((public_addrs, stun_type));
 			}
 		}
 	}
 
-	Ok((laddr, StunType::Blocked))
+	Ok((vec![], StunType::Blocked))
 }
 
 pub fn do_stun_test(port: Option<u16>, stun_server: Option<Vec<String>>) {

@@ -19,7 +19,7 @@ pub const DEFAULT_PUB_STUN_SERVERS: [&str; 4] = [
 	"stun.miwifi.com:3478",
 ];
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WgConfig {
 	#[serde(rename = "wg")]
 	pub wg: Wg,
@@ -35,16 +35,7 @@ pub struct WgConfig {
 	pub status: Option<Status>,
 }
 
-impl PartialEq for WgConfig {
-	fn eq(&self, other: &Self) -> bool {
-		self.network.id == other.network.id
-	}
-	fn ne(&self, other: &Self) -> bool {
-		self.network.id != other.network.id
-	}
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Discovery {
 	/// local tcp echo port, for port detection
 	pub port: u16,
@@ -69,7 +60,7 @@ pub struct Discovery {
 	pub passive: Option<bool>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Pubip {
 	#[serde(rename = "url")]
 	pub url: String,
@@ -79,7 +70,7 @@ pub struct Pubip {
 	pub regex: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InterfacePolicy {
 	/// priority more than `block` or `allow`
 	/// if `interface` set, ignore `allow` and `block`
@@ -104,7 +95,7 @@ pub struct InterfacePolicy {
 	pub allow_interface_regex: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Network {
 	#[serde(rename = "id")]
 	pub id: String,
@@ -149,13 +140,13 @@ pub struct Network {
 	pub deny: Option<Vec<String>>,
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, clap::ValueEnum)]
 pub enum AllowPolicy {
 	Public,
 	Private,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Status {
 	#[serde(rename = "peers")]
 	#[serde(skip_serializing_if = "Vec::is_empty")]
@@ -181,7 +172,7 @@ pub struct Peer {
 	pub allow_ips: Vec<ipnet::IpNet>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Wg {
 	#[serde(rename = "name")]
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -207,6 +198,22 @@ pub struct Wg {
 impl WgConfig {
 	pub fn get_peer(&self, key: &str) -> Option<&Peer> {
 		self.status.as_ref()?.peers.iter().find(|x| x.key == key)
+	}
+	pub fn remove_peer(&mut self, key: &str) {
+		if let Some(status) = self.status.as_mut() {
+			status.peers.retain(|x| x.key != key);
+		}
+	}
+	pub fn replace_peer(&mut self, peer: Peer) {
+		if let Some(status) = self.status.as_mut() {
+			status.peers.retain(|x| x.key != peer.key);
+			status.peers.push(peer);
+		}
+	}
+	pub fn add_peer(&mut self, peer: Peer) {
+		if let Some(status) = self.status.as_mut() {
+			status.peers.push(peer);
+		}
 	}
 	pub fn copy(&self) -> Self {
 		self.clone()

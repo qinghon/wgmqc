@@ -42,11 +42,7 @@ impl WgIntf {
 					public_key: keystr_to_key(&x.key).unwrap(),
 					endpoint: x.endpoint,
 					persistent_keepalive_interval: Some(20),
-					allowed_ips: x
-						.allow_ips
-						.iter()
-						.map(|x| IpAddrMask::new(x.addr(), x.prefix_len()))
-						.collect(),
+					allowed_ips: x.allow_ips.iter().map(|x| IpAddrMask::new(x.addr(), x.max_prefix_len())).collect(),
 					..Default::default()
 				})
 				.collect()
@@ -70,12 +66,8 @@ impl WgIntf {
 			cur_conf: interface_config,
 		})
 	}
-	pub fn sync_config(
-		&mut self,
-		wg: &config::Wg,
-		peers: &Vec<Peer>,
-	) -> Result<(), defguard_wireguard_rs::error::WireguardInterfaceError> {
-		// debug!("start sync wg interface: {}", self.ifname);
+	pub fn sync_config(&mut self, wg: &config::Wg, peers: &Vec<Peer>) -> Result<(), WireguardInterfaceError> {
+		debug!("start sync wg interface: {}", self.ifname);
 		let host = self.wgapi.read_interface_data()?;
 		// debug!("get host prvkey:{:?} status: {:?}", host.private_key, host);
 		let mut cur_conf = self.cur_conf.clone();
@@ -110,20 +102,12 @@ impl WgIntf {
 				let update_k = keystr_to_key(&peer.key).unwrap();
 				let host_peer_exist = host.peers.contains_key(&update_k);
 				let self_peer_exist = self.cur_conf.peers.iter().any(|x| x.public_key == update_k);
-				let update_peer_allow_ips = peer
-					.allow_ips
-					.iter()
-					.map(|x| IpAddrMask::new(x.addr(), x.prefix_len()))
-					.collect();
+				let update_peer_allow_ips =
+					peer.allow_ips.iter().map(|x| IpAddrMask::new(x.addr(), x.max_prefix_len())).collect();
 				match (host_peer_exist, self_peer_exist) {
 					(true, true) => {
 						let host_peer = host.peers.get(&update_k).unwrap();
-						let self_peer = self
-							.cur_conf
-							.peers
-							.iter_mut()
-							.find(|x| x.public_key == update_k)
-							.unwrap();
+						let self_peer = self.cur_conf.peers.iter_mut().find(|x| x.public_key == update_k).unwrap();
 						self_peer.endpoint = peer.endpoint;
 						self_peer.allowed_ips = update_peer_allow_ips;
 						self_peer.persistent_keepalive_interval = Some(20);
@@ -136,8 +120,11 @@ impl WgIntf {
 						}
 						if config_changed {
 							info!(
-								"{} update peer {} endpint={:?} allow_ip={:?}",
-								self.ifname, peer.key, peer.endpoint, peer.allow_ips
+								"{} update peer \"{}\" endpint={:?} allow_ip={:?}",
+								self.ifname,
+								peer.name.as_ref().unwrap_or(&peer.key),
+								peer.endpoint,
+								peer.allow_ips
 							);
 							self.wgapi.configure_peer(
 								self.cur_conf.peers.iter().find(|x| x.public_key == update_k).unwrap(),
@@ -149,18 +136,16 @@ impl WgIntf {
 						self.cur_conf.peers.push(host_peer.clone());
 					}
 					(false, true) => {
-						let self_peer = self
-							.cur_conf
-							.peers
-							.iter_mut()
-							.find(|x| x.public_key == update_k)
-							.unwrap();
+						let self_peer = self.cur_conf.peers.iter_mut().find(|x| x.public_key == update_k).unwrap();
 						self_peer.endpoint = peer.endpoint;
 						self_peer.allowed_ips = update_peer_allow_ips;
 						self_peer.persistent_keepalive_interval = Some(20);
 						info!(
-							"{} add peer {} endpoint={:?} allow_ip={:?}",
-							self.ifname, peer.key, peer.endpoint, peer.allow_ips
+							"{} add peer \"{}\" endpoint={:?} allow_ip={:?}",
+							self.ifname,
+							peer.name.as_ref().unwrap_or(&peer.key),
+							peer.endpoint,
+							peer.allow_ips
 						);
 						self.wgapi
 							.configure_peer(self.cur_conf.peers.iter().find(|x| x.public_key == update_k).unwrap())?;
@@ -169,17 +154,16 @@ impl WgIntf {
 						let self_peer = defguard_wireguard_rs::host::Peer {
 							public_key: update_k,
 							endpoint: peer.endpoint,
-							persistent_keepalive_interval: Some(10),
-							allowed_ips: peer
-								.allow_ips
-								.iter()
-								.map(|x| IpAddrMask::new(x.addr(), x.prefix_len()))
-								.collect(),
+							persistent_keepalive_interval: Some(20),
+							allowed_ips: update_peer_allow_ips,
 							..Default::default()
 						};
 						info!(
-							"{} add peer {} endpoint={:?} allow_ip={:?}",
-							self.ifname, peer.key, peer.endpoint, peer.allow_ips
+							"{} add peer \"{}\" endpoint={:?} allow_ip={:?}",
+							self.ifname,
+							peer.name.as_ref().unwrap_or(&peer.key),
+							peer.endpoint,
+							peer.allow_ips
 						);
 						self.wgapi.configure_peer(&self_peer)?;
 						self.cur_conf.peers.push(self_peer);

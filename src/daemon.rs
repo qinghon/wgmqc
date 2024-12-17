@@ -92,15 +92,31 @@ fn new_ipv6_socket(addr: SocketAddr) -> Result<std::net::UdpSocket, io::Error> {
 	Ok(socket.into())
 }
 
+async fn tcp_steam_echo(mut stream: tokio::net::TcpStream, cancellation_token: CancellationToken) {
+	loop {
+		let mut read = [0; 1024];
+		tokio::select! {
+			recv = stream.read(&mut read) => {
+				match recv {
+				Ok(n) => {
+					if n == 0 {
+						break; // connection was closed
+					}
+					let _ = stream.write_all(&read[0..n]).await;
+				}
+				Err(_) => break,
+				}
+			},
+			_ =cancellation_token.cancelled() => break,
+		}
+	}
+}
+
 impl EchoServer {
 	pub(crate) async fn new(udp_port: u16, tcp_port: u16) -> Result<Self, io::Error> {
 		let (udp4, udp6) = if udp_port != 0 {
 			(
-				Some(
-					UdpSocket::bind(SocketAddr::new(IPADDRV4_UNSPECIFIED, udp_port))
-						.await
-						.expect("cannot bind4 udp"),
-				),
+				Some(UdpSocket::bind(SocketAddr::new(IPADDRV4_UNSPECIFIED, udp_port)).await.expect("cannot bind4 udp")),
 				Some(UdpSocket::from_std(
 					new_ipv6_socket(SocketAddr::new(IPADDRV6_UNSPECIFIED, udp_port)).expect("cannot bind6 udp"),
 				)?),
@@ -136,9 +152,7 @@ impl EchoServer {
 	) -> Result<(), io::Error> {
 		// debug!("Starting udp echo server");
 		if !self.enable_udp {
-			tokio::select! {
-				_ = cancellation_token.cancelled() => {},
-			}
+			_ = cancellation_token.cancelled().await;
 			return Ok(());
 		}
 		let udp_sock = &self.udp_socket;
@@ -173,6 +187,28 @@ impl EchoServer {
 			}
 		},
 			_ = cancellation_token.cancelled() => {},
+		}
+		Ok(())
+	}
+	pub(crate) async fn start_tcp_echo(&self, cancellation_token: &CancellationToken) -> Result<(), io::Error> {
+		if !self.enable_tcp {
+			cancellation_token.cancelled().await;
+			return Ok(());
+		}
+		loop {
+			tokio::select! {
+				Ok(x4) = self.tcp_listener.as_ref().unwrap().accept() => {
+					let ( stream, addr) = x4;
+					debug!("tcp connected from {}", addr);
+					tokio::spawn(tcp_steam_echo(stream, cancellation_token.clone()));
+				},
+				Ok(x6) = self.tcp_listener6.as_ref().unwrap().accept() => {
+					let ( stream, addr) = x6;
+					debug!("tcp connected from {}", addr);
+					tokio::spawn(tcp_steam_echo(stream, cancellation_token.clone()));
+				}
+				_ = cancellation_token.cancelled() => break,
+			}
 		}
 		Ok(())
 	}
@@ -297,8 +333,10 @@ impl MqConnect {
 							continue;
 						},
 						Err(e) => {
+
 								error!("network {} poll err: {}", self.netname, e);
 								debug!("mqtt transport: {:?}", self.event_loop.mqtt_options);
+								self.event_loop.clean();
 								tokio::time::sleep(Duration::from_secs(1)).await;
 								continue;
 						}
@@ -328,10 +366,7 @@ impl MqConnect {
 			}
 		};
 		let start = Instant::now();
-		let ret = self
-			.client
-			.publish(&self.subcribe_path, rumqttc::QoS::AtMostOnce, false, data)
-			.await;
+		let ret = self.client.publish(&self.subcribe_path, rumqttc::QoS::AtMostOnce, false, data).await;
 		if ret.is_err() {
 			if log_enabled!(Debug) {
 				debug!(
@@ -515,13 +550,9 @@ fn update_ice_addr(ice_addr: &mut ice::IceAddr, intfs: &Vec<netdev::Interface>, 
 	}
 	for ip6 in ip6list {
 		if Ipv6AddrC(ip6).is_global() {
-			ice_addr
-				.ipv6
-				.push(SocketAddr::V6(SocketAddrV6::new(ip6, cur_port, 0, 0)))
+			ice_addr.ipv6.push(SocketAddr::V6(SocketAddrV6::new(ip6, cur_port, 0, 0)))
 		} else {
-			ice_addr
-				.lan
-				.push(SocketAddr::V6(SocketAddrV6::new(ip6, cur_port, 0, 0)))
+			ice_addr.lan.push(SocketAddr::V6(SocketAddrV6::new(ip6, cur_port, 0, 0)))
 		}
 	}
 }
@@ -531,85 +562,6 @@ fn test_port_available(port: u16, udp: bool) -> bool {
 		std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok() && std::net::TcpListener::bind(("::", port)).is_ok()
 	} else {
 		std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() && std::net::TcpListener::bind(("::", port)).is_ok()
-	}
-}
-
-async fn tcp_steam_echo(mut stream: tokio::net::TcpStream) {
-	loop {
-		let mut read = [0; 1024];
-		match stream.read(&mut read).await {
-			Ok(n) => {
-				if n == 0 {
-					break; // connection was closed
-				}
-				let _ = stream.write_all(&read[0..n]).await;
-			}
-			Err(_) => break,
-		}
-	}
-}
-
-async fn start_tcp_echo(tcp_port: u16, cancellation_token: CancellationToken) -> Result<(), io::Error> {
-	let listener = tokio::net::TcpListener::bind(("0.0.0.0", tcp_port)).await?;
-	let listenerv6 = tokio::net::TcpListener::bind((IPADDRV6_UNSPECIFIED, tcp_port)).await?;
-
-	loop {
-		tokio::select! {
-			Ok(x4) = listener.accept() => {
-				let ( stream, addr) = x4;
-				debug!("tcp connected from {}", addr);
-				tokio::spawn(tcp_steam_echo(stream));
-			},
-			Ok(x6) = listenerv6.accept() => {
-				let ( stream, addr) = x6;
-				debug!("tcp connected from {}", addr);
-				tokio::spawn(tcp_steam_echo(stream));
-			}
-			_ = cancellation_token.cancelled() => break,
-		}
-	}
-	Ok(())
-}
-
-async fn start_udp_echo(
-	udp_port: u16,
-	cancellation_token: CancellationToken,
-	udp_sock: &Option<UdpSocket>,
-) -> Result<(), io::Error> {
-	let mut udp_recv_buf = Box::new([0u8; 16384]);
-	loop {
-		tokio::select! {
-			udp4_recv = udp_sock.as_ref().unwrap().recv_from(udp_recv_buf.as_mut()) => {
-				match udp4_recv {
-					Err(e) => {
-						error!("udp recv error {}", e);
-						break;
-					},
-					Ok((p, src)) => {
-						trace!("udp recv from {}:{}", p, src);
-						if p > 0 {
-							let _ = udp_sock.as_ref().unwrap().send_to(&udp_recv_buf[0..p], src).await;
-						}
-					}
-				}
-
-			},
-			_ = cancellation_token.cancelled() => break,
-		}
-	}
-	Ok(())
-}
-
-async fn start_echo_server(
-	port: u16,
-	cancellation_token: CancellationToken,
-	use_udp: bool,
-	udp_sock: &Option<UdpSocket>,
-) -> Result<(), io::Error> {
-	if use_udp {
-		start_udp_echo(port, cancellation_token, udp_sock).await
-	} else {
-		start_tcp_echo(port, cancellation_token).await
 	}
 }
 
@@ -637,7 +589,29 @@ fn sync_wgintf(
 	}
 	wgapi_
 }
+
+// 安全同步状态
+// 仅同步`status`到disk, 其他配置从disk 同步到内存
+// 注意：同步到内存不代表配置即时更新
 fn sync_conf_to_disk(conf_path: &PathBuf, conf: WgConfShare) {
+	if let Ok(v) = config::read_config_file(conf_path) {
+		let mut cur_conf = conf.load().copy();
+
+		let skip_dump = v.status != cur_conf.status;
+
+		if cur_conf.wg != v.wg || cur_conf.network != v.network || cur_conf.discovery != v.discovery {
+			cur_conf.wg = v.wg;
+			cur_conf.network = v.network;
+			cur_conf.discovery = v.discovery;
+			conf.store(Arc::new(cur_conf));
+		}
+
+		if skip_dump {
+			debug!("config file already exists and equal of memory, skip save");
+			return;
+		}
+	};
+
 	let yaml = match serde_yaml::to_string(&conf.load().copy()) {
 		Ok(v) => v,
 		Err(e) => {
@@ -672,6 +646,7 @@ fn create_bpf_update_info(netid: &[u8; 32], intfs: &Vec<Interface>, wg_port: u16
 		portmaps_out: Some(vec![(echo_port, wg_port)]),
 	}
 }
+
 // tcp mode:
 // wireguard: 51820(udp) echo_server: 51820(tcp)
 // udp mode:
@@ -699,20 +674,21 @@ fn sync_peer_to_config(conf: WgConfShare, peer_map: &mut HashMap<String, Peer>) 
 	let config = conf.load();
 
 	let mut new_config = None;
+
+	if config.status.is_none() {
+		let mut new_conf = config.copy();
+		new_conf.status = Some(config::Status { peers: vec![] });
+		new_config.replace(new_conf);
+	}
+	// 添加与更新
 	for (key, peer) in peer_map.iter() {
 		let old_peer = config.get_peer(key);
 		if old_peer.is_none() {
 			if new_config.is_none() {
 				new_config.replace(config.copy());
 			}
-			new_config
-				.as_mut()
-				.unwrap()
-				.status
-				.as_mut()
-				.unwrap()
-				.peers
-				.push(peer.clone());
+
+			new_config.as_mut().unwrap().add_peer(peer.clone());
 			continue;
 		}
 		let old_peer = old_peer.unwrap();
@@ -722,59 +698,20 @@ fn sync_peer_to_config(conf: WgConfShare, peer_map: &mut HashMap<String, Peer>) 
 		if new_config.is_none() {
 			new_config.replace(config.copy());
 		}
-		let old_post = new_config
-			.as_mut()
-			.unwrap()
-			.status
-			.as_mut()
-			.unwrap()
-			.peers
-			.iter()
-			.position(|x| x.key.eq(key))
-			.unwrap();
-		new_config
-			.as_mut()
-			.unwrap()
-			.status
-			.as_mut()
-			.unwrap()
-			.peers
-			.swap_remove(old_post);
-		new_config
-			.as_mut()
-			.unwrap()
-			.status
-			.as_mut()
-			.unwrap()
-			.peers
-			.push(peer.clone());
-	}
-	for peer in config.status.as_ref().unwrap().peers.iter() {
-		if peer_map.contains_key(&peer.key) {
-			continue;
-		}
-		if new_config.is_none() {
-			new_config.replace(config.copy());
-		}
 
-		let old_post = new_config
-			.as_mut()
-			.unwrap()
-			.status
-			.as_mut()
-			.unwrap()
-			.peers
-			.iter()
-			.position(|x| x.key.eq(&peer.key))
-			.unwrap();
-		new_config
-			.as_mut()
-			.unwrap()
-			.status
-			.as_mut()
-			.unwrap()
-			.peers
-			.swap_remove(old_post);
+		new_config.as_mut().unwrap().replace_peer(peer.clone());
+	}
+	// 删除
+	if let Some(status) = config.status.as_ref() {
+		for peer in status.peers.iter() {
+			if peer_map.contains_key(&peer.key) {
+				continue;
+			}
+			if new_config.is_none() {
+				new_config.replace(config.copy());
+			}
+			new_config.as_mut().unwrap().remove_peer(&peer.key);
+		}
 	}
 
 	if let Some(new) = new_config {
@@ -829,9 +766,7 @@ async fn wg_config_loop(
 
 	let intfs = util::filter_avail_interface(&network_policy);
 
-	let mut mq_connect = MqConnect::new(conf.load_full().copy())
-		.await
-		.expect("cannot connect to mq");
+	let mut mq_connect = MqConnect::new(conf.load_full().copy()).await.expect("cannot connect to mq");
 
 	{
 		let config = conf.load();
@@ -842,9 +777,7 @@ async fn wg_config_loop(
 		}
 	}
 	let echo_server = if support_udp_mode {
-		EchoServer::new(cur_port + 1, 0)
-			.await
-			.expect("cannot create echo server")
+		EchoServer::new(cur_port + 1, 0).await.expect("cannot create echo server")
 	} else {
 		EchoServer::new(0, cur_port).await.expect("cannot create echo server")
 	};
@@ -875,10 +808,10 @@ async fn wg_config_loop(
 		stun_udp_sock,
 	)
 	.await
-	.unwrap_or((SOCKETADDRV4_UNSPECIFIED, stun::StunType::Blocked));
-	debug!("probe stun for default {} {:?}", pubaddr, nat_type);
+	.unwrap_or((vec![], stun::StunType::Blocked));
+	debug!("probe stun for default {:?} {:?}", pubaddr, nat_type);
 	if nat_type != stun::StunType::Blocked && nat_type != stun::StunType::Symmetric {
-		cur_ice_addr_ref.stun = vec![pubaddr]
+		cur_ice_addr_ref.stun = pubaddr;
 	}
 
 	update_ice_addr(cur_ice_addr_ref, &intfs, cur_port);
@@ -894,7 +827,10 @@ async fn wg_config_loop(
 	let mut udp_recv_buf = Box::new([0u8; 16384]);
 
 	let udp_cancel = network_cancel.clone();
+	let tcp_cancel = network_cancel.clone();
 	let mqtt_cancel = network_cancel.clone();
+
+	wgapi = sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
 
 	loop {
 		tokio::select! {
@@ -920,9 +856,9 @@ async fn wg_config_loop(
 							conf.load().discovery.stuns.clone(),
 							stun_udp_sock
 						).await
-						.unwrap_or((SOCKETADDRV4_UNSPECIFIED, stun::StunType::Blocked));
+						.unwrap_or((vec![], stun::StunType::Blocked));
 					if nat_type != stun::StunType::Blocked && nat_type != stun::StunType::Symmetric {
-						cur_ice_addr_ref.stun = vec![pubaddr];
+						cur_ice_addr_ref.stun = pubaddr;
 					}
 					let mut pubips_v4 = get_pubip_list(&conf.load().discovery.pubip, true, &intfs[0].name).await.unwrap_or_else(|_| {vec![]});
 					let pubips_v6 = get_pubip_list(&conf.load().discovery.pubip, false, &intfs[0].name).await.unwrap_or_else(|_| {vec![]});
@@ -950,6 +886,7 @@ async fn wg_config_loop(
 				}
 			},
 			_ = echo_server.start_udp_echo(&udp_cancel, &mut udp_recv_buf) => {},
+			_ = echo_server.start_tcp_echo(&tcp_cancel) => {},
 			msg = event_rx.recv() => {
 				if msg.is_none() {
 					break;
@@ -972,7 +909,7 @@ async fn wg_config_loop(
 					},
 					WgCtrlMsg::RemovePeer {pubkey} => {
 						let peer = allow_peers_ref.remove(&pubkey);
-						if let Some(p) = peer {
+						if peer.is_some() {
 							sync_peer_to_config(conf.clone(), allow_peers_ref);
 						}
 						wgapi = sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
@@ -1015,12 +952,12 @@ async fn wg_config_loop(
 								}
 								if p.endpoint != endpoint {
 									p.endpoint = endpoint;
-									info!("update peer {}({}) endpoint to {:?}", &p.name.as_ref().unwrap(), p.key, endpoint);
+									info!("update peer {}({}) endpoint to {:?}", &p.name.as_ref().unwrap_or(&"<none>".to_string()), p.key, endpoint);
 									need_sync = true;
 								}
 
 							}
-							debug!("network: {} update peer: {:?}", netname, p);
+							// debug!("network: {} update peer: {:?}", netname, p);
 						}else {
 							event_tx.send(WgCtrlMsg::AddPeer { wg, endpoint }).await.unwrap();
 							continue;
@@ -1085,6 +1022,8 @@ async fn wg_config_loop(
 			error!("cannot send delete bpf_update_info to bpf_sender: {}", ret.unwrap_err());
 		}
 	}
+	sync_peer_to_config(conf.clone(), allow_peers_ref);
+	sync_conf_to_disk(&conf_path, conf);
 
 	if let Some(wgapi_) = wgapi {
 		let _ = wgapi_.remove();

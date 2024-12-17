@@ -17,11 +17,6 @@ fn main() {
 		"-Werror".to_string(),
 	];
 
-	SkeletonBuilder::new()
-		.source(SRC)
-		.clang_args(c_args)
-		.debug(true)
-		.build_and_generate(&out)
-		.unwrap();
+	SkeletonBuilder::new().source(SRC).clang_args(c_args).debug(true).build_and_generate(&out).unwrap();
 	println!("cargo:rerun-if-changed={SRC}");
 }

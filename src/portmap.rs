@@ -33,9 +33,7 @@ async fn start_action_map(
 	if def_gw.is_some() {
 		match natpmp_ng::new_tokio_natpmp_with(def_gw.clone().unwrap()).await {
 			Ok(n) => '_inner: {
-				let err = n
-					.send_port_mapping_request(protocol, private_addr.port(), public_port, 7200)
-					.await;
+				let err = n.send_port_mapping_request(protocol, private_addr.port(), public_port, 7200).await;
 				if err.is_err() {
 					error!("cannot sendmap port for nap-pmp: {}", err.err().unwrap());
 					break '_inner;
@@ -153,8 +151,12 @@ pub(crate) async fn portmap_loop(mut chan: tokio::sync::mpsc::Receiver<MapAction
 	loop {
 		tokio::select! {
 			_ = interval.tick() => {
-				upnp_gw = upnp_gw_fn();
-				def_gw = def_gw_fn();
+				if upnp_gw.is_none() {
+					upnp_gw = upnp_gw_fn();
+				}
+				if def_gw.is_none() {
+					def_gw = def_gw_fn();
+				}
 				if def_gw.is_none(){
 					def_gw = set_def_gw_from_upnp(&upnp_gw, &def_gw);
 				}
