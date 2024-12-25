@@ -59,27 +59,20 @@ pub async fn bpf_event_loop(
 				}
 				let event = event_.unwrap();
 				let netvalue = net_state.get(&event.netid);
-				let mut changed = false;
 
 				match (netvalue, event.is_empty()) {
 					(None, true) => continue,
 					(None, false) => {
 						net_state.insert(event.netid, (event.ip, event.intfs, event.portmaps, event.portmaps_out));
-						changed = true;
 					},
 					(Some(_), true) => {
 						net_state.remove(&event.netid);
-						changed = true;
 					},
 					(Some(_), false) => {
 						net_state.insert(event.netid, (event.ip, event.intfs, event.portmaps, event.portmaps_out));
-						changed = true;
 					}
 				}
-
-				if ! changed {
-					continue;
-				}
+				
 				let mut allow_ips = HashSet::new();
 				let mut portmaps = HashSet::new();
 				let mut hook_intfs = HashSet::new();

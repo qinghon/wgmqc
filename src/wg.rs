@@ -1,12 +1,10 @@
 use crate::config;
-use crate::config::Peer;
 use base64::Engine;
 use defguard_wireguard_rs::error::WireguardInterfaceError;
+pub use defguard_wireguard_rs::host::Peer;
 use defguard_wireguard_rs::net::IpAddrMask;
 use defguard_wireguard_rs::{InterfaceConfiguration, WGApi, WireguardInterfaceApi};
 use log::{debug, info};
-use std::net::SocketAddr;
-use std::time::SystemTime;
 
 pub(crate) fn keystr_to_key(s: &str) -> Option<defguard_wireguard_rs::key::Key> {
 	let pri_key = base64::prelude::BASE64_STANDARD.decode(s);
@@ -30,7 +28,11 @@ pub(crate) struct WgIntf {
 	ifname: String,
 }
 impl WgIntf {
-	pub fn new(ifname: &str, wg: &config::Wg, peers: Option<Vec<Peer>>) -> Result<Self, WireguardInterfaceError> {
+	pub fn new(
+		ifname: &str,
+		wg: &config::Wg,
+		peers: Option<Vec<config::Peer>>,
+	) -> Result<Self, WireguardInterfaceError> {
 		let wgapi = WGApi::new(ifname.to_string(), false)?;
 		// Create host interfaces
 		wgapi.create_interface()?;
@@ -66,7 +68,7 @@ impl WgIntf {
 			cur_conf: interface_config,
 		})
 	}
-	pub fn sync_config(&mut self, wg: &config::Wg, peers: &Vec<Peer>) -> Result<(), WireguardInterfaceError> {
+	pub fn sync_config(&mut self, wg: &config::Wg, peers: &Vec<config::Peer>) -> Result<(), WireguardInterfaceError> {
 		debug!("start sync wg interface: {}", self.ifname);
 		let host = self.wgapi.read_interface_data()?;
 		// debug!("get host prvkey:{:?} status: {:?}", host.private_key, host);
@@ -193,32 +195,14 @@ impl WgIntf {
 
 		Ok(())
 	}
-
-	pub fn get_peer_last_handshake(&self, pubkey: &str) -> Option<SystemTime> {
-		let host = match self.wgapi.read_interface_data() {
+	
+	pub fn get_peer(&self, pubkey: &str) -> Option<Peer> {
+		let mut host = match self.wgapi.read_interface_data() {
 			Ok(x) => x,
 			Err(_) => return None,
 		};
 		let k = keystr_to_key(pubkey).unwrap();
-
-		if let Some(peer) = host.peers.get(&k) {
-			peer.last_handshake
-		} else {
-			None
-		}
-	}
-	pub fn get_peer_endpoint(&self, pubkey: &str) -> Option<SocketAddr> {
-		let host = match self.wgapi.read_interface_data() {
-			Ok(x) => x,
-			Err(_) => return None,
-		};
-		let k = keystr_to_key(pubkey).unwrap();
-
-		if let Some(peer) = host.peers.get(&k) {
-			peer.endpoint
-		} else {
-			None
-		}
+		host.peers.remove(&k)
 	}
 
 	pub fn remove(&self) -> Result<(), WireguardInterfaceError> {

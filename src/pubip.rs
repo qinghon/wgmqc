@@ -31,7 +31,7 @@ async fn get_ip_server(ip: &Pubip, ipv4: bool, client: &reqwest::Client) -> io::
 	let body = match resp.text().await {
 		Ok(b) => b,
 		Err(e) => {
-			return Err(io::Error::new(io::ErrorKind::InvalidData, "cannot parse body to text"));
+			return Err(io::Error::new(io::ErrorKind::InvalidData, format!("cannot parse body to text: {}", e)));
 		}
 	};
 
@@ -51,7 +51,7 @@ async fn get_ip_server(ip: &Pubip, ipv4: bool, client: &reqwest::Client) -> io::
 	match IpAddr::from_str(&ip_str) {
 		Ok(ip) => Ok(ip),
 		Err(e) => {
-			error!("cannot parse ip from {}", ip_str);
+			error!("cannot parse ip from {}: {}", ip_str, e);
 			Err(io::Error::new(io::ErrorKind::InvalidData, "cannot parse ip from body"))
 		}
 	}

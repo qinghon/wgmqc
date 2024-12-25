@@ -12,12 +12,12 @@ use crate::*;
 use log::Level::Debug;
 use log::{debug, error, info, log_enabled, trace, warn};
 use netdev::Interface;
-use rumqttc::{Event, Incoming, MqttOptions, Transport};
+use rumqttc::{ConnectReturnCode, Event, Incoming, MqttOptions, Transport};
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -315,6 +315,16 @@ impl MqConnect {
 				_ = cancellation_token.cancelled() => return None,
 				event = self.event_loop.poll() => {
 					match event {
+						Ok(Event::Incoming(Incoming::ConnAck(ack))) => {
+							if ack.code == ConnectReturnCode::Success {
+								if let Err(e) = self.client.subscribe(self.subcribe_path.clone(), rumqttc::QoS::AtLeastOnce).await {
+									error!("cannot subscribe to {}: {}", self.subcribe_path, e);
+								}
+							}else {
+								warn!("Could not connect to mqtt broker: {:?}", ack.code);
+                    			tokio::time::sleep(Duration::from_secs(5)).await;
+							}
+						},
 						Ok(Event::Incoming(Incoming::Publish(msg))) => {
 							// debug!("recv other client: {:?}", msg);
 							let payload = msg.payload;
@@ -456,9 +466,6 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 				Err(e) => Err(e),
 			}
 		});
-		// if let Ok(l) = analyze_tcp_latency(lan_addr).await {
-		// 	new_ice_addr.push((lan_addr, l))
-		// };
 	}
 
 	for ipv6_addr in ice_addr.ipv6 {
@@ -468,9 +475,6 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 				Err(e) => Err(e),
 			}
 		});
-		// if let Ok(l) = analyze_tcp_latency(ipv6_addr).await {
-		// 	new_ice_addr.push((ipv6_addr, l))
-		// };
 	}
 	for stun_addr in ice_addr.stun {
 		rets.spawn(async move {
@@ -479,9 +483,6 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 				Err(e) => Err(e),
 			}
 		});
-		// if let Ok(l) = analyze_tcp_latency(stun_addr).await {
-		// 	new_ice_addr.push((stun_addr, l))
-		// };
 	}
 	for map_addr in ice_addr.port_map {
 		rets.spawn(async move {
@@ -490,9 +491,6 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 				Err(e) => Err(e),
 			}
 		});
-		// if let Ok(l) = analyze_tcp_latency(map_addr).await {
-		// 	new_ice_addr.push((map_addr, l))
-		// };
 	}
 	for static_addr in ice_addr.statics {
 		rets.spawn(async move {
@@ -501,12 +499,7 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 				Err(e) => Err(e),
 			}
 		});
-		// if let Ok(l) = analyze_tcp_latency(static_addr).await {
-		// 	new_ice_addr.push((static_addr, l))
-		// };
 	}
-
-	// let res = rets.join_all().await;
 
 	let res = tokio::select! {
 		v = rets.join_all() => v,
@@ -559,7 +552,7 @@ fn update_ice_addr(ice_addr: &mut ice::IceAddr, intfs: &Vec<netdev::Interface>, 
 
 fn test_port_available(port: u16, udp: bool) -> bool {
 	if udp {
-		std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok() && std::net::TcpListener::bind(("::", port)).is_ok()
+		std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok() && std::net::UdpSocket::bind(("::", port)).is_ok()
 	} else {
 		std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() && std::net::TcpListener::bind(("::", port)).is_ok()
 	}
@@ -567,33 +560,35 @@ fn test_port_available(port: u16, udp: bool) -> bool {
 
 fn sync_wgintf(
 	conf: WgConfShare,
-	mut wgapi_: Option<WgIntf>,
+	wgapi_: Arc<Mutex<Option<WgIntf>>>,
 	allow_peers: &mut HashMap<String, Peer>,
 	ifname: &str,
-) -> Option<WgIntf> {
+) {
 	let peers: Vec<Peer> = allow_peers.values().cloned().collect();
+	let mut wgapi_lock = wgapi_.lock().unwrap();
 
-	if wgapi_.is_none() && !peers.is_empty() {
+	if wgapi_lock.is_none() && !peers.is_empty() {
 		match wg::WgIntf::new(ifname, &conf.load().wg, Some(peers)) {
-			Ok(v) => return Some(v),
+			Ok(v) => {
+				wgapi_lock.replace(v);
+			}
 			Err(e) => {
 				error!("cannot create wgintf {}", e);
-				return None;
 			}
 		};
 	} else if !peers.is_empty() {
-		match wgapi_.as_mut().unwrap().sync_config(&conf.load().wg, &peers) {
+		match wgapi_lock.as_mut().unwrap().sync_config(&conf.load().wg, &peers) {
 			Ok(_) => {}
 			Err(e) => error!("cannot sync wg config {}", e),
 		}
 	}
-	wgapi_
 }
 
 // 安全同步状态
 // 仅同步`status`到disk, 其他配置从disk 同步到内存
 // 注意：同步到内存不代表配置即时更新
-fn sync_conf_to_disk(conf_path: &PathBuf, conf: WgConfShare) {
+fn sync_conf_to_disk(conf_path: &PathBuf, conf: WgConfShare) -> bool {
+	let mut need_reload = false;
 	if let Ok(v) = config::read_config_file(conf_path) {
 		let mut cur_conf = conf.load().copy();
 
@@ -604,11 +599,12 @@ fn sync_conf_to_disk(conf_path: &PathBuf, conf: WgConfShare) {
 			cur_conf.network = v.network;
 			cur_conf.discovery = v.discovery;
 			conf.store(Arc::new(cur_conf));
+			need_reload = true;
 		}
 
 		if skip_dump {
 			debug!("config file already exists and equal of memory, skip save");
-			return;
+			return need_reload;
 		}
 	};
 
@@ -616,13 +612,14 @@ fn sync_conf_to_disk(conf_path: &PathBuf, conf: WgConfShare) {
 		Ok(v) => v,
 		Err(e) => {
 			error!("cannot serde to yaml: {}", e);
-			return;
+			return need_reload;
 		}
 	};
 	match util::safe_write_file(conf_path, yaml) {
-		Ok(_) => {}
+		Ok(_) => {},
 		Err(e) => error!("cannot write config file {}", e),
 	}
+	need_reload
 }
 
 fn create_bpf_update_info(netid: &[u8; 32], intfs: &Vec<Interface>, wg_port: u16, echo_port: u16) -> UpdateIntfs {
@@ -719,12 +716,181 @@ fn sync_peer_to_config(conf: WgConfShare, peer_map: &mut HashMap<String, Peer>) 
 	}
 }
 
+async fn process_ctrl_msg(
+	msg: WgCtrlMsg,
+	conf: WgConfShare,
+	allow_peers_ref: &mut HashMap<String, Peer>,
+	passive_mode: bool,
+	netname: &str,
+	mq_connect: &mut MqConnect,
+	all_known_peers: &mut HashSet<String>,
+	event_tx: Sender<WgCtrlMsg>,
+	self_pubkey: &String,
+	wgapi: Arc<Mutex<Option<WgIntf>>>,
+	ifname: &String,
+	cur_ice_addr_ref: &mut IceAddr,
+	network_cancel: CancellationToken,
+) {
+	match msg {
+		WgCtrlMsg::AddPeer { wg, mut endpoint } => {
+			debug!(
+				"network: {} add peer {} {}",
+				netname,
+				wg.name.clone().unwrap(),
+				wg.public
+			);
+			if passive_mode {
+				endpoint = None;
+			}
+			let peer = config::Peer {
+				key: (&wg.public).clone(),
+				name: wg.name,
+				endpoint,
+				allow_ips: wg.ip,
+			};
+			
+			allow_peers_ref.insert(wg.public.clone(), peer);
+			sync_peer_to_config(conf.clone(), allow_peers_ref);
+			sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
+		}
+		WgCtrlMsg::RemovePeer { pubkey } => {
+			let peer = allow_peers_ref.remove(&pubkey);
+			if peer.is_some() {
+				sync_peer_to_config(conf.clone(), allow_peers_ref);
+			}
+			sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
+			info!("remove peer {}", pubkey);
+		}
+		WgCtrlMsg::UpdatePeer {
+			wg,
+			endpoints,
+			traceroute,
+		} => {
+			debug!(
+				"network: {} update peer \"{}\" {:?} {:?}",
+				netname,
+				wg.name.as_ref().unwrap_or(&wg.public),
+				endpoints,
+				wg.ip
+			);
+			if wg.public.eq(self_pubkey) {
+				return;
+			}
+			if passive_mode {
+				debug!("node is passive mode, ignore peer update");
+			}
+
+			let mut need_sync = false;
+			let mut fallback_stun = None;
+			let mut endpoint = None;
+			if let Some(endpoint_addrs) = endpoints {
+				if !endpoint_addrs.stun.is_empty() {
+					// 当peer 在nat 后且所有endpoint 都测试失败时, 使用stun地址作为最后手段,并期待stun映射能恢复 
+					fallback_stun = Some(endpoint_addrs.stun[0].clone());
+				}
+				let available_addrs = analyze_ice_addrs(endpoint_addrs, network_cancel.clone()).await;
+				if !available_addrs.is_empty() {
+					endpoint = Some(available_addrs[0]);
+				} else if fallback_stun.is_some() {
+					endpoint = fallback_stun;
+				}
+			}
+			if let Some(p) = allow_peers_ref.get_mut(&wg.public) {
+				p.allow_ips = wg.ip;
+				if endpoint.is_some() && p.endpoint != endpoint {
+					'bar1: {
+						if wgapi.lock().unwrap().is_none() {
+							break 'bar1;
+						}
+						let host_peer = {
+							let wgapi_lock = wgapi.lock().unwrap();
+							let api = wgapi_lock.as_ref().unwrap();
+							api.get_peer(&p.key)
+						};
+						if host_peer.is_none() {
+							break 'bar1;
+						}
+						let host_peer = host_peer.unwrap();
+						if host_peer.endpoint.is_none() || host_peer.last_handshake.is_none() {
+							break 'bar1;
+						}
+						let last_handshake = host_peer.last_handshake.unwrap();
+						let last_endpoint = host_peer.endpoint.unwrap();
+
+						if let Ok(d) = last_handshake.elapsed() {
+							if d < Duration::from_secs(20) {
+								endpoint = Some(last_endpoint);
+							}
+						}
+					}
+
+					if p.endpoint != endpoint {
+						p.endpoint = endpoint;
+						info!(
+							"update peer {}({}) endpoint to {:?}",
+							&p.name.as_ref().unwrap_or(&"<none>".to_string()),
+							p.key,
+							endpoint
+						);
+						need_sync = true;
+					}
+				}
+				// debug!("network: {} update peer: {:?}", netname, p);
+			} else {
+				event_tx.send(WgCtrlMsg::AddPeer { wg, endpoint }).await.unwrap();
+				return;
+			}
+			if need_sync {
+				sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
+				sync_peer_to_config(conf.clone(), allow_peers_ref);
+			}
+		}
+		WgCtrlMsg::PubipChanged { ips: _ } => {
+			// todo: remap nat and push update msg
+
+			mq_connect
+				.sendmsg(MqMsg {
+					t: MqMsgType::Update(mq_msg::MsgUpdate {
+						wg: conf.load().wg.clone_to_share(),
+						endpoints: cur_ice_addr_ref.clone(),
+						traceroute: None,
+					}),
+					salt: None,
+				})
+				.await
+				.unwrap();
+		}
+		WgCtrlMsg::Announce { wg } => {
+			if wg.public.eq(self_pubkey) {
+				return;
+			}
+			if allow_peers_ref.contains_key(&wg.public) {
+				mq_connect
+					.sendmsg(MqMsg {
+						t: MqMsgType::Update(mq_msg::MsgUpdate {
+							wg: conf.load().wg.clone_to_share(),
+							endpoints: cur_ice_addr_ref.clone(),
+							traceroute: None,
+						}),
+						salt: None,
+					})
+					.await
+					.unwrap();
+				return;
+			}
+			all_known_peers.insert(wg.public.clone());
+			event_tx.send(WgCtrlMsg::AddPeer { wg, endpoint: None }).await.unwrap()
+		}
+	}
+}
+
 async fn wg_config_loop(
 	conf_path: PathBuf,
 	wg_config: WgConfig,
 	portmap_tx: sync::mpsc::Sender<portmap::MapAction>,
 	network_cancel: CancellationToken,
 	mut sender: Option<Sender<UpdateIntfs>>,
+	reload_tx: Sender<(PathBuf, WgConfig)>,
 ) {
 	let netname = wg_config.network.name.clone();
 	// Create new API struct for interface
@@ -733,6 +899,7 @@ async fn wg_config_loop(
 	} else {
 		format!("utun{}", netname)
 	};
+	let mut need_reload = false;
 
 	let mut interval = tokio::time::interval(Duration::from_secs(wg_config.discovery.interval.unwrap_or(120)));
 
@@ -740,7 +907,7 @@ async fn wg_config_loop(
 
 	let network_policy = wg_config.network.interface_policy.clone().unwrap_or_default();
 
-	let mut wgapi: Option<WgIntf> = None;
+	let wgapi: Arc<Mutex<Option<WgIntf>>> = Arc::new(Mutex::new(None));
 
 	let self_pubkey = wg_config.wg.public.clone();
 	let network_id = util::keystr_to_array(&wg_config.network.id).unwrap();
@@ -751,9 +918,9 @@ async fn wg_config_loop(
 	let mut cur_port = wg_config.wg.port;
 
 	let conf = Arc::new(arc_swap::ArcSwap::from_pointee(wg_config));
-	let mut prev_pubip_v4 = vec![];
-	let mut prev_pubip_v6 = vec![];
-	let mut prev_nat_type = None;
+	// let mut prev_pubip_v4 = vec![];
+	// let mut prev_pubip_v6 = vec![];
+	// let mut prev_nat_type = None;
 
 	let mut cur_ice_addr = IceAddr::default();
 	let cur_ice_addr_ref = &mut cur_ice_addr;
@@ -830,7 +997,7 @@ async fn wg_config_loop(
 	let tcp_cancel = network_cancel.clone();
 	let mqtt_cancel = network_cancel.clone();
 
-	wgapi = sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
+	sync_wgintf(conf.clone(), wgapi.clone(), allow_peers_ref, &ifname);
 
 	loop {
 		tokio::select! {
@@ -842,7 +1009,7 @@ async fn wg_config_loop(
 				info!("start tick");
 				let intfs = util::filter_avail_interface(&network_policy);
 				if !intfs.is_empty() {
-					wgapi = sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
+					sync_wgintf(conf.clone(), wgapi.clone(), allow_peers_ref, &ifname);
 					debug!("get interface: {:?}", intfs);
 					update_ice_addr(cur_ice_addr_ref, &intfs, cur_port);
 					if support_udp_mode {
@@ -860,15 +1027,15 @@ async fn wg_config_loop(
 					if nat_type != stun::StunType::Blocked && nat_type != stun::StunType::Symmetric {
 						cur_ice_addr_ref.stun = pubaddr;
 					}
-					let mut pubips_v4 = get_pubip_list(&conf.load().discovery.pubip, true, &intfs[0].name).await.unwrap_or_else(|_| {vec![]});
-					let pubips_v6 = get_pubip_list(&conf.load().discovery.pubip, false, &intfs[0].name).await.unwrap_or_else(|_| {vec![]});
-					if prev_pubip_v4 != pubips_v4 || prev_pubip_v6 != pubips_v6 || prev_nat_type != Some(nat_type) {
-						prev_pubip_v4 = pubips_v4.clone();
-						prev_pubip_v6 = pubips_v6.clone();
-						prev_nat_type = Some(nat_type);
-						pubips_v4.extend(&pubips_v6);
-						let _ = event_tx.send(WgCtrlMsg::PubipChanged { ips:  pubips_v4}).await;
-					}
+					// let mut pubips_v4 = get_pubip_list(&conf.load().discovery.pubip, true, &intfs[0].name).await.unwrap_or_else(|_| {vec![]});
+					// let pubips_v6 = get_pubip_list(&conf.load().discovery.pubip, false, &intfs[0].name).await.unwrap_or_else(|_| {vec![]});
+					// if prev_pubip_v4 != pubips_v4 || prev_pubip_v6 != pubips_v6 || prev_nat_type != Some(nat_type) {
+					// 	prev_pubip_v4 = pubips_v4.clone();
+					// 	prev_pubip_v6 = pubips_v6.clone();
+					// 	prev_nat_type = Some(nat_type);
+					// 	pubips_v4.extend(&pubips_v6);
+					// 	let _ = event_tx.send(WgCtrlMsg::PubipChanged { ips:  pubips_v4}).await;
+					// }
 
 					// portmap_tx.send(portmap::MapAction::Map {})
 
@@ -880,7 +1047,10 @@ async fn wg_config_loop(
 								}),
 								salt: None
 								}).await;
-					sync_conf_to_disk(&conf_path, conf.clone());
+					need_reload = sync_conf_to_disk(&conf_path, conf.clone());
+					if need_reload {
+						break;
+					}
 				}else {
 					warn!("network {} not found available interface, skip wireguard interface setup", netname);
 				}
@@ -893,112 +1063,14 @@ async fn wg_config_loop(
 				}
 				let msg = msg.unwrap();
 				// debug!("network: {} recv ctrl msg {:?}", netname, msg);
-				match msg {
-					WgCtrlMsg::AddPeer {wg, endpoint} => {
-						debug!("network: {} add peer {} {}", netname, wg.name.clone().unwrap(), wg.public);
-						let peer = config::Peer {
-							key: (&wg.public).clone() ,
-							name: wg.name,
-							endpoint: endpoint,
-							allow_ips: wg.ip,
-						};
-
-						allow_peers_ref.insert(wg.public.clone(), peer);
-						sync_peer_to_config(conf.clone(), allow_peers_ref);
-						wgapi = sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
-					},
-					WgCtrlMsg::RemovePeer {pubkey} => {
-						let peer = allow_peers_ref.remove(&pubkey);
-						if peer.is_some() {
-							sync_peer_to_config(conf.clone(), allow_peers_ref);
-						}
-						wgapi = sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
-						info!("remove peer {}", pubkey);
-					},
-					WgCtrlMsg::UpdatePeer {wg, endpoints, traceroute} => {
-						debug!("network: {} update peer \"{}\" {:?} {:?}", netname, wg.name.as_ref().unwrap_or(&wg.public), endpoints, wg.ip);
-						if wg.public == self_pubkey {
-							continue;
-						}
-						if passive_mode {
-							debug!("node is passive mode, ignore peer update");
-						}
-
-						let mut need_sync = false;
-						let mut fallback_stun = None;
-						let mut endpoint = None;
-						if let Some(endpoint_addrs) = endpoints {
-							if !endpoint_addrs.stun.is_empty() {
-								fallback_stun = Some(endpoint_addrs.stun[0].clone());
-							}
-							let available_addrs = analyze_ice_addrs(endpoint_addrs, network_cancel.clone()).await;
-							if !available_addrs.is_empty()  {
-								endpoint = Some(available_addrs[0]);
-							} else if fallback_stun.is_some() {
-								endpoint = fallback_stun;
-							}
-						}
-						if let Some(p) = allow_peers_ref.get_mut(&wg.public) {
-							p.allow_ips = wg.ip;
-							if endpoint.is_some() &&  p.endpoint != endpoint {
-								if let Some(last_handshake) = wgapi.as_ref().unwrap().get_peer_last_handshake(&p.key) {
-									if let Ok(d) = last_handshake.elapsed() {
-										if d < Duration::from_secs(20) {
-											if let Some(latest_endpoint) = wgapi.as_ref().unwrap().get_peer_endpoint(&p.key) {
-												endpoint = Some(latest_endpoint);
-											}
-										}
-									}
-								}
-								if p.endpoint != endpoint {
-									p.endpoint = endpoint;
-									info!("update peer {}({}) endpoint to {:?}", &p.name.as_ref().unwrap_or(&"<none>".to_string()), p.key, endpoint);
-									need_sync = true;
-								}
-
-							}
-							// debug!("network: {} update peer: {:?}", netname, p);
-						}else {
-							event_tx.send(WgCtrlMsg::AddPeer { wg, endpoint }).await.unwrap();
-							continue;
-						}
-						if need_sync {
-							wgapi = sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
-							sync_peer_to_config(conf.clone(), allow_peers_ref);
-						}
-					}
-					WgCtrlMsg::PubipChanged{ips: _} => {
-						// todo: remap nat and push update msg
-
-						mq_connect.sendmsg(MqMsg {
-							t: MqMsgType::Update(mq_msg::MsgUpdate {
-								wg: conf.load().wg.clone_to_share(),
-								endpoints: cur_ice_addr_ref.clone(),
-								traceroute: None,
-							}),
-							salt: None
-						}).await.unwrap();
-
-					}
-					WgCtrlMsg::Announce { wg } => {
-						if wg.public == self_pubkey {
-							continue;
-						}
-						if allow_peers_ref.contains_key(&wg.public ) {
-							mq_connect.sendmsg(MqMsg {
-								t: MqMsgType::Update(mq_msg::MsgUpdate {
-									wg: conf.load().wg.clone_to_share(),
-									endpoints: cur_ice_addr_ref.clone(),
-									traceroute: None,
-								}),
-								salt: None
-								}).await.unwrap();
-							continue;
-						}
-						all_known_peers.insert(wg.public.clone());
-						event_tx.send(WgCtrlMsg::AddPeer { wg , endpoint: None }).await.unwrap()
-					}
-				}
+				process_ctrl_msg(msg, conf.clone(), allow_peers_ref, passive_mode, &netname,
+					&mut mq_connect, &mut all_known_peers, event_tx.clone(),
+					&self_pubkey,
+					wgapi.clone(),
+					&ifname,
+					cur_ice_addr_ref,
+					network_cancel.clone()
+				).await;
 			},
 			msg = mq_connect.recvmsg(&mqtt_cancel) => {
 				if msg.is_none() {
@@ -1014,7 +1086,7 @@ async fn wg_config_loop(
 			.as_ref()
 			.unwrap()
 			.send(UpdateIntfs {
-				netid: network_id.clone(),
+				netid: network_id,
 				..Default::default()
 			})
 			.await;
@@ -1023,12 +1095,20 @@ async fn wg_config_loop(
 		}
 	}
 	sync_peer_to_config(conf.clone(), allow_peers_ref);
-	sync_conf_to_disk(&conf_path, conf);
+	sync_conf_to_disk(&conf_path, conf.clone());
 
-	if let Some(wgapi_) = wgapi {
-		let _ = wgapi_.remove();
-		info!("interface {} removed", ifname);
+	{
+		let wgapi_lock = wgapi.lock().unwrap();
+		if let Some(wgapi_) = wgapi_lock.as_ref() {
+			let _ = wgapi_.remove();
+			info!("interface {} removed", ifname);
+		}
 	}
+	drop(mq_connect);
+	drop(echo_server);
+	if need_reload {
+		let _ = reload_tx.send((conf_path, conf.load().copy())).await;
+	};
 }
 
 async fn network_loop(
@@ -1037,31 +1117,65 @@ async fn network_loop(
 	main_cancel: CancellationToken,
 	sender: Option<Sender<UpdateIntfs>>,
 ) {
-	let mut set = tokio::task::JoinSet::new();
+	let set = tokio_util::task::TaskTracker::new();
 	let all_network_cancel = main_cancel.child_token();
+	
+	let mut network_cancel = HashMap::new();
+	
+	let (reload_tx, mut reload_rx) = sync::mpsc::channel(10);
 	loop {
 		tokio::select! {
 			msg = rx.recv() => {
 				match msg {
-					Some(NetworkMessage::Add(conf)) => {
-						info!("start network {}", conf.1.network.name);
-						set.spawn(wg_config_loop(conf.0, conf.1, portmap_tx.clone(), all_network_cancel.clone(), sender.clone()));
-						// TODO: Add a new network
+					Some(NetworkMessage::Add((conf_path, conf))) => {
+						info!("start network {}", conf.network.name);
+						let child = all_network_cancel.child_token();
+						let id = conf.network.id.clone();
+						network_cancel.insert(id, child.clone());
+						set.spawn(wg_config_loop(conf_path, conf, portmap_tx.clone(), child, sender.clone(), reload_tx.clone()));
 					},
-					Some(NetworkMessage::Leave(conf)) => {
-						info!("leave network {}", conf.1.network.name);
-						// TODO: Remove a network
+					Some(NetworkMessage::Leave((_, conf))) => {
+						info!("leave network {}", conf.network.name);
+						let token = network_cancel.remove(&conf.network.id);
+						if let Some(cancel) = token {
+							cancel.cancel();
+						}
 					},
 					None => break,
 				}
-			}
+			},
+			res = reload_rx.recv() => {
+				if res.is_none() {
+					break;
+				}
+				let (conf_path, conf): (_, _) = res.unwrap();
+				info!("reload network {}", conf.network.name);
+				
+				if let Some(cancel) = network_cancel.remove(&conf.network.id) {
+					cancel.cancel();
+				}
+				
+				let child = all_network_cancel.child_token();
+				let id = conf.network.id.clone();
+				network_cancel.insert(id, child.clone());
+				set.spawn(wg_config_loop(conf_path, conf, portmap_tx.clone(), child, sender.clone(), reload_tx.clone()));
+				
+			},
 			_ = main_cancel.cancelled() => {
 				all_network_cancel.cancel();
 				break;
 			}
 		}
 	}
-	let _ = set.join_all().await;
+
+	set.close();
+	if let Err(_) = tokio::time::timeout(
+		Duration::from_secs(10),
+		set.wait()
+	).await {
+		error!("close network loop timed out");
+	};
+	
 }
 async fn config_monitor(
 	config_dir: impl AsRef<Path>,
@@ -1132,7 +1246,12 @@ pub fn start_daemon(config_dir: impl AsRef<Path> + Send + 'static) {
 
 			wait_for_signal().await;
 			main_token.cancel();
-			set.join_all().await;
+			if let Err(_) = tokio::time::timeout(
+				Duration::from_secs(10),
+				set.join_all()
+			).await {
+				error!("close main loop timed out");
+			};
 		});
 }
 
