@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Default)]
 pub(crate) struct UpdateIntfs {
-	pub(crate) netid: [u8; 32],
+	pub(crate) netid: util::Key,
 	pub(crate) ip: Option<Vec<IpAddr>>,
 
 	pub(crate) intfs: Option<Vec<u32>>,
@@ -72,7 +72,7 @@ pub async fn bpf_event_loop(
 						net_state.insert(event.netid, (event.ip, event.intfs, event.portmaps, event.portmaps_out));
 					}
 				}
-				
+
 				let mut allow_ips = HashSet::new();
 				let mut portmaps = HashSet::new();
 				let mut hook_intfs = HashSet::new();

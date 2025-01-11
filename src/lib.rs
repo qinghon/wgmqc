@@ -7,7 +7,6 @@ pub mod daemon;
 mod ice;
 pub mod mq_msg;
 mod portmap;
-mod pubip;
 pub mod stun;
 pub mod util;
 mod wg;

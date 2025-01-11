@@ -4,9 +4,8 @@ use crate::ice::IceAddr;
 use crate::mq_msg::{MqMsg, MqMsgType};
 use crate::portmap;
 use crate::portmap::portmap_loop;
-use crate::pubip::get_pubip_list;
 use crate::stun::stun_do_trans;
-use crate::util::{IPADDRV4_UNSPECIFIED, IPADDRV6_UNSPECIFIED, Ipv6AddrC, SOCKETADDRV4_UNSPECIFIED};
+use crate::util::{Ipv6AddrC, IPADDRV4_UNSPECIFIED, IPADDRV6_UNSPECIFIED, SOCKETADDRV4_UNSPECIFIED};
 use crate::wg::WgIntf;
 use crate::*;
 use log::Level::Debug;
@@ -81,13 +80,11 @@ fn new_ipv6_socket(addr: SocketAddr) -> Result<std::net::UdpSocket, io::Error> {
 	)
 	.map_err(|e| io::Error::new(ErrorKind::Other, e))?;
 
-	// socket.set_only_v6(false).map_err(|e|io::Error::new(ErrorKind::Other, e))?;
-	socket.set_only_v6(true).unwrap();
+	socket.set_only_v6(true).map_err(|e| io::Error::new(ErrorKind::Other, e))?;
+	// socket.set_only_v6(true).unwrap();
 
-	// socket.bind(&addr.into()).map_err(|e|io::Error::new(ErrorKind::AlreadyExists, e))?;
-	socket.bind(&addr.into()).unwrap();
-	// socket.listen(128).map_err(|e|io::Error::new(ErrorKind::Other, e))?;
-	// socket.listen(128).unwrap();
+	socket.bind(&addr.into()).map_err(|e| io::Error::new(ErrorKind::AlreadyExists, e))?;
+	// socket.bind(&addr.into()).unwrap();
 
 	Ok(socket.into())
 }
@@ -322,7 +319,7 @@ impl MqConnect {
 								}
 							}else {
 								warn!("Could not connect to mqtt broker: {:?}", ack.code);
-                    			tokio::time::sleep(Duration::from_secs(5)).await;
+								tokio::time::sleep(Duration::from_secs(5)).await;
 							}
 						},
 						Ok(Event::Incoming(Incoming::Publish(msg))) => {
@@ -459,7 +456,21 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 	let mut rets = tokio::task::JoinSet::new();
 	let udp = ice_addr.support_udp;
 
-	for lan_addr in ice_addr.lan {
+	for addr in ice_addr.lan.into_iter().chain(
+		ice_addr
+			.ipv6
+			.into_iter()
+			.chain(ice_addr.stun.into_iter().chain(ice_addr.port_map.into_iter().chain(ice_addr.statics.into_iter()))),
+	) {
+		rets.spawn(async move {
+			match analyze_addr_latency(addr, udp).await {
+				Ok(l) => Ok((addr, l)),
+				Err(e) => Err(e),
+			}
+		});
+	}
+
+	/*for lan_addr in ice_addr.lan {
 		rets.spawn(async move {
 			match analyze_addr_latency(lan_addr, udp).await {
 				Ok(l) => Ok((lan_addr, l)),
@@ -499,7 +510,7 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 				Err(e) => Err(e),
 			}
 		});
-	}
+	}*/
 
 	let res = tokio::select! {
 		v = rets.join_all() => v,
@@ -616,13 +627,13 @@ fn sync_conf_to_disk(conf_path: &PathBuf, conf: WgConfShare) -> bool {
 		}
 	};
 	match util::safe_write_file(conf_path, yaml) {
-		Ok(_) => {},
+		Ok(_) => {}
 		Err(e) => error!("cannot write config file {}", e),
 	}
 	need_reload
 }
 
-fn create_bpf_update_info(netid: &[u8; 32], intfs: &Vec<Interface>, wg_port: u16, echo_port: u16) -> UpdateIntfs {
+fn create_bpf_update_info(netid: &util::Key, intfs: &Vec<Interface>, wg_port: u16, echo_port: u16) -> UpdateIntfs {
 	let intf_ids = intfs.iter().map(|i| i.index).collect::<Vec<_>>();
 	let mut ips = Vec::new();
 
@@ -636,7 +647,7 @@ fn create_bpf_update_info(netid: &[u8; 32], intfs: &Vec<Interface>, wg_port: u16
 	}
 
 	UpdateIntfs {
-		netid: netid.clone(),
+		netid: *netid,
 		ip: Some(ips),
 		intfs: Some(intf_ids),
 		portmaps: Some(vec![(wg_port, echo_port)]),
@@ -748,7 +759,7 @@ async fn process_ctrl_msg(
 				endpoint,
 				allow_ips: wg.ip,
 			};
-			
+
 			allow_peers_ref.insert(wg.public.clone(), peer);
 			sync_peer_to_config(conf.clone(), allow_peers_ref);
 			sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
@@ -781,60 +792,57 @@ async fn process_ctrl_msg(
 			}
 
 			let mut need_sync = false;
-			let mut fallback_stun = None;
+
 			let mut endpoint = None;
+
 			if let Some(endpoint_addrs) = endpoints {
-				if !endpoint_addrs.stun.is_empty() {
-					// 当peer 在nat 后且所有endpoint 都测试失败时, 使用stun地址作为最后手段,并期待stun映射能恢复 
-					fallback_stun = Some(endpoint_addrs.stun[0].clone());
-				}
 				let available_addrs = analyze_ice_addrs(endpoint_addrs, network_cancel.clone()).await;
 				if !available_addrs.is_empty() {
 					endpoint = Some(available_addrs[0]);
-				} else if fallback_stun.is_some() {
-					endpoint = fallback_stun;
 				}
 			}
 			if let Some(p) = allow_peers_ref.get_mut(&wg.public) {
 				p.allow_ips = wg.ip;
-				if endpoint.is_some() && p.endpoint != endpoint {
-					'bar1: {
-						if wgapi.lock().unwrap().is_none() {
-							break 'bar1;
-						}
-						let host_peer = {
-							let wgapi_lock = wgapi.lock().unwrap();
-							let api = wgapi_lock.as_ref().unwrap();
-							api.get_peer(&p.key)
-						};
-						if host_peer.is_none() {
-							break 'bar1;
-						}
-						let host_peer = host_peer.unwrap();
-						if host_peer.endpoint.is_none() || host_peer.last_handshake.is_none() {
-							break 'bar1;
-						}
-						let last_handshake = host_peer.last_handshake.unwrap();
-						let last_endpoint = host_peer.endpoint.unwrap();
-
-						if let Ok(d) = last_handshake.elapsed() {
-							if d < Duration::from_secs(20) {
-								endpoint = Some(last_endpoint);
-							}
-						}
+				let old_ep = p.endpoint.clone();
+				let mut cur_endpoint = None;
+				let mut cur_last_handshake = Duration::MAX;
+				'bar1: {
+					if wgapi.lock().unwrap().is_none() {
+						break 'bar1;
 					}
-
-					if p.endpoint != endpoint {
-						p.endpoint = endpoint;
-						info!(
-							"update peer {}({}) endpoint to {:?}",
-							&p.name.as_ref().unwrap_or(&"<none>".to_string()),
-							p.key,
-							endpoint
-						);
-						need_sync = true;
+					let host_peer = {
+						let wgapi_lock = wgapi.lock().unwrap();
+						let api = wgapi_lock.as_ref().unwrap();
+						api.get_peer(&p.key)
+					};
+					if host_peer.is_none() {
+						break 'bar1;
+					}
+					let host_peer = host_peer.unwrap();
+					if host_peer.endpoint.is_none() || host_peer.last_handshake.is_none() {
+						break 'bar1;
+					}
+					let last_handshake = host_peer.last_handshake.unwrap();
+					cur_endpoint = host_peer.endpoint;
+					if let Ok(d) = last_handshake.elapsed() {
+						cur_last_handshake = d;
 					}
 				}
+
+				p.endpoint = endpoint;
+				if endpoint != cur_endpoint && cur_last_handshake < Duration::from_secs(120) {
+					p.endpoint = cur_endpoint;
+				}
+				if p.endpoint != old_ep {
+					need_sync = true;
+					info!(
+						"update peer {}({}) endpoint to {:?}",
+						p.name.as_ref().unwrap_or(&"".to_string()),
+						p.key,
+						endpoint
+					);
+				}
+
 				// debug!("network: {} update peer: {:?}", netname, p);
 			} else {
 				event_tx.send(WgCtrlMsg::AddPeer { wg, endpoint }).await.unwrap();
@@ -887,7 +895,7 @@ async fn process_ctrl_msg(
 async fn wg_config_loop(
 	conf_path: PathBuf,
 	wg_config: WgConfig,
-	portmap_tx: sync::mpsc::Sender<portmap::MapAction>,
+	mut portmap_tx: sync::mpsc::Sender<portmap::MapAction>,
 	network_cancel: CancellationToken,
 	mut sender: Option<Sender<UpdateIntfs>>,
 	reload_tx: Sender<(PathBuf, WgConfig)>,
@@ -910,7 +918,7 @@ async fn wg_config_loop(
 	let wgapi: Arc<Mutex<Option<WgIntf>>> = Arc::new(Mutex::new(None));
 
 	let self_pubkey = wg_config.wg.public.clone();
-	let network_id = util::keystr_to_array(&wg_config.network.id).unwrap();
+	let network_id = util::keystr_to_array(&wg_config.network.id).unwrap().into();
 
 	let bpf_sender = sender.as_mut();
 	let support_udp_mode = bpf_sender.is_some();
@@ -983,14 +991,6 @@ async fn wg_config_loop(
 
 	update_ice_addr(cur_ice_addr_ref, &intfs, cur_port);
 
-	let _ = mq_connect
-		.sendmsg(mq_msg::MqMsg {
-			t: mq_msg::MqMsgType::Announce(mq_msg::MsgAnnounce {
-				wg: conf.load().wg.clone_to_share(),
-			}),
-			salt: None,
-		})
-		.await;
 	let mut udp_recv_buf = Box::new([0u8; 16384]);
 
 	let udp_cancel = network_cancel.clone();
@@ -999,11 +999,52 @@ async fn wg_config_loop(
 
 	sync_wgintf(conf.clone(), wgapi.clone(), allow_peers_ref, &ifname);
 
+	let (portmap_event_tx, mut portmap_rx) = tokio::sync::mpsc::channel::<portmap::MapUpdate>(2);
+	let mut cur_port_maps = vec![];
+	let mut cur_port_pubips = vec![];
+	let mut sended_port_map = false;
+	let _ = mq_connect
+		.sendmsg(MqMsg {
+			t: MqMsgType::Announce(mq_msg::MsgAnnounce {
+				wg: conf.load().wg.clone_to_share(),
+			}),
+			salt: None,
+		})
+		.await;
 	loop {
 		tokio::select! {
 			_ = network_cancel.cancelled() => {
 				info!("network {} recv canceled", netname);
 				break;
+			},
+			ma = portmap_rx.recv() => {
+				if ma.is_none() {
+					continue;
+				}
+				debug!("portmap_rx: {:?}", ma);
+				cur_ice_addr_ref.port_map.clear();
+				match ma.unwrap() {
+					portmap::MapUpdate::Pubip(pubips) => {
+						cur_port_pubips = pubips.clone();
+						for ip in pubips {
+							for (port, _, proto) in cur_port_maps.iter() {
+								if proto == &portmap::Protocol::UDP {
+									cur_ice_addr_ref.port_map.push(SocketAddr::new(ip, *port));
+								}
+							}
+						}
+					},
+					portmap::MapUpdate::Port(ports) => {
+						cur_port_maps = ports.clone();
+						for ip in cur_port_pubips.iter() {
+							for (port, _, proto) in ports.iter() {
+								if proto == &portmap::Protocol::UDP {
+									cur_ice_addr_ref.port_map.push(SocketAddr::new(ip.clone(), *port));
+								}
+							}
+						}
+					},
+				}
 			},
 			_ = interval.tick() => {
 				info!("start tick");
@@ -1027,17 +1068,16 @@ async fn wg_config_loop(
 					if nat_type != stun::StunType::Blocked && nat_type != stun::StunType::Symmetric {
 						cur_ice_addr_ref.stun = pubaddr;
 					}
-					// let mut pubips_v4 = get_pubip_list(&conf.load().discovery.pubip, true, &intfs[0].name).await.unwrap_or_else(|_| {vec![]});
-					// let pubips_v6 = get_pubip_list(&conf.load().discovery.pubip, false, &intfs[0].name).await.unwrap_or_else(|_| {vec![]});
-					// if prev_pubip_v4 != pubips_v4 || prev_pubip_v6 != pubips_v6 || prev_nat_type != Some(nat_type) {
-					// 	prev_pubip_v4 = pubips_v4.clone();
-					// 	prev_pubip_v6 = pubips_v6.clone();
-					// 	prev_nat_type = Some(nat_type);
-					// 	pubips_v4.extend(&pubips_v6);
-					// 	let _ = event_tx.send(WgCtrlMsg::PubipChanged { ips:  pubips_v4}).await;
-					// }
-
-					// portmap_tx.send(portmap::MapAction::Map {})
+					if ! sended_port_map {
+						if let Ok(_) = portmap_tx.send(portmap::MapAction::AddMaps {
+							key: network_id.clone(),
+							ports: vec![(cur_port, portmap::Protocol::UDP)],
+							intfs,
+							chan: portmap_event_tx.clone()
+						}).await {
+							sended_port_map = true;
+						}
+					}
 
 					let _ = mq_connect.sendmsg(MqMsg {
 								t: MqMsgType::Update(mq_msg::MsgUpdate {
@@ -1096,6 +1136,15 @@ async fn wg_config_loop(
 	}
 	sync_peer_to_config(conf.clone(), allow_peers_ref);
 	sync_conf_to_disk(&conf_path, conf.clone());
+	// clean portmap
+	let _ = portmap_tx
+		.send(portmap::MapAction::AddMaps {
+			key: network_id.clone(),
+			ports: vec![],
+			intfs: vec![],
+			chan: portmap_event_tx,
+		})
+		.await;
 
 	{
 		let wgapi_lock = wgapi.lock().unwrap();
@@ -1119,9 +1168,9 @@ async fn network_loop(
 ) {
 	let set = tokio_util::task::TaskTracker::new();
 	let all_network_cancel = main_cancel.child_token();
-	
+
 	let mut network_cancel = HashMap::new();
-	
+
 	let (reload_tx, mut reload_rx) = sync::mpsc::channel(10);
 	loop {
 		tokio::select! {
@@ -1150,16 +1199,16 @@ async fn network_loop(
 				}
 				let (conf_path, conf): (_, _) = res.unwrap();
 				info!("reload network {}", conf.network.name);
-				
+
 				if let Some(cancel) = network_cancel.remove(&conf.network.id) {
 					cancel.cancel();
 				}
-				
+
 				let child = all_network_cancel.child_token();
 				let id = conf.network.id.clone();
 				network_cancel.insert(id, child.clone());
 				set.spawn(wg_config_loop(conf_path, conf, portmap_tx.clone(), child, sender.clone(), reload_tx.clone()));
-				
+
 			},
 			_ = main_cancel.cancelled() => {
 				all_network_cancel.cancel();
@@ -1169,13 +1218,9 @@ async fn network_loop(
 	}
 
 	set.close();
-	if let Err(_) = tokio::time::timeout(
-		Duration::from_secs(10),
-		set.wait()
-	).await {
+	if let Err(_) = tokio::time::timeout(Duration::from_secs(10), set.wait()).await {
 		error!("close network loop timed out");
 	};
-	
 }
 async fn config_monitor(
 	config_dir: impl AsRef<Path>,
@@ -1246,10 +1291,7 @@ pub fn start_daemon(config_dir: impl AsRef<Path> + Send + 'static) {
 
 			wait_for_signal().await;
 			main_token.cancel();
-			if let Err(_) = tokio::time::timeout(
-				Duration::from_secs(10),
-				set.join_all()
-			).await {
+			if let Err(_) = tokio::time::timeout(Duration::from_secs(10), set.join_all()).await {
 				error!("close main loop timed out");
 			};
 		});
@@ -1258,7 +1300,7 @@ pub fn start_daemon(config_dir: impl AsRef<Path> + Send + 'static) {
 /// Waits for a signal that requests a graceful shutdown, like SIGTERM or SIGINT.
 #[cfg(unix)]
 async fn wait_for_signal_impl() {
-	use tokio::signal::unix::{SignalKind, signal};
+	use tokio::signal::unix::{signal, SignalKind};
 
 	// Infos here:
 	// https://www.gnu.org/software/libc/manual/html_node/Termination-Signals.html

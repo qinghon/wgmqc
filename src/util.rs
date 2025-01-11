@@ -1,5 +1,6 @@
 use crate::config::InterfacePolicy;
 use base64::Engine;
+use std::fmt::Display;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use x25519_dalek::PublicKey;
@@ -142,6 +143,74 @@ pub fn filter_avail_interface(policy: &InterfacePolicy) -> Vec<netdev::Interface
 			}
 		})
 		.collect()
+}
+
+#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Key([u8; 32]);
+
+impl Display for Key {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+		write!(f, "{}", base64::prelude::BASE64_STANDARD.encode(self.0))
+	}
+}
+const HEX_CHAR_LOOKUP: [char; 16] = [
+	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
+];
+impl Key {
+	pub fn hex(&self) -> String {
+		let mut hex_string = String::with_capacity(self.0.len() * 2);
+		for byte in self.0.iter() {
+			hex_string.push(HEX_CHAR_LOOKUP[(byte >> 4) as usize]);
+			hex_string.push(HEX_CHAR_LOOKUP[(byte & 0xF) as usize]);
+		}
+		hex_string
+	}
+}
+
+impl From<[u8; 32]> for Key {
+	fn from(value: [u8; 32]) -> Self {
+		Self(value)
+	}
+}
+impl From<x25519_dalek::StaticSecret> for Key {
+	fn from(value: StaticSecret) -> Self {
+		Self(value.to_bytes())
+	}
+}
+impl From<x25519_dalek::PublicKey> for Key {
+	fn from(value: PublicKey) -> Self {
+		Self(value.to_bytes())
+	}
+}
+impl From<xeddsa::xed25519::PublicKey> for Key {
+	fn from(value: xeddsa::xed25519::PublicKey) -> Self {
+		Self(value.0)
+	}
+}
+impl From<xeddsa::xed25519::PrivateKey> for Key {
+	fn from(value: xeddsa::xed25519::PrivateKey) -> Self {
+		Self(value.0)
+	}
+}
+impl Into<x25519_dalek::StaticSecret> for Key {
+	fn into(self) -> StaticSecret {
+		StaticSecret::from(self.0)
+	}
+}
+impl Into<x25519_dalek::PublicKey> for Key {
+	fn into(self) -> x25519_dalek::PublicKey {
+		x25519_dalek::PublicKey::from(self.0)
+	}
+}
+impl Into<xeddsa::xed25519::PublicKey> for Key {
+	fn into(self) -> xeddsa::xed25519::PublicKey {
+		xeddsa::xed25519::PublicKey(self.0)
+	}
+}
+impl Into<xeddsa::xed25519::PrivateKey> for Key {
+	fn into(self) -> xeddsa::xed25519::PrivateKey {
+		xeddsa::xed25519::PrivateKey(self.0)
+	}
 }
 
 pub struct Ipv6AddrC(pub Ipv6Addr);

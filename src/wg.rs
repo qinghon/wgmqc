@@ -195,7 +195,7 @@ impl WgIntf {
 
 		Ok(())
 	}
-	
+
 	pub fn get_peer(&self, pubkey: &str) -> Option<Peer> {
 		let mut host = match self.wgapi.read_interface_data() {
 			Ok(x) => x,

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
-use libbpf_rs::{MapCore, OpenObject, TC_EGRESS, TC_INGRESS, TcHook, TcHookBuilder};
+use libbpf_rs::{MapCore, OpenObject, TcHook, TcHookBuilder, TC_EGRESS, TC_INGRESS};
 use log::{error, info};
 use std::collections::HashMap;
 use std::mem::MaybeUninit;

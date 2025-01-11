@@ -11,7 +11,6 @@ use std::{error, fs, io};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 pub const DEFAULT_WG_PORT: u16 = 51820;
-const DEFAULT_PUBIP_DISCOVERY: [&str; 3] = ["http://ifcfg.cn", "http://ip.3322.net", "https://ip.sb"];
 pub const DEFAULT_PUB_STUN_SERVERS: [&str; 4] = [
 	"stun.chat.bilibili.com:3478",
 	"stun.hot-chilli.net:3478",
@@ -50,24 +49,8 @@ pub struct Discovery {
 	#[serde(default)]
 	pub stuns: Vec<String>,
 
-	/// discovery public ip server list, some free of internet
-	#[serde(rename = "pubip")]
-	#[serde(skip_serializing_if = "Vec::is_empty")]
-	#[serde(default)]
-	pub pubip: Vec<Pubip>,
-
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub passive: Option<bool>,
-}
-
-#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Pubip {
-	#[serde(rename = "url")]
-	pub url: String,
-
-	#[serde(skip_serializing_if = "Option::is_none")]
-	#[serde(rename = "regex")]
-	pub regex: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -174,25 +157,20 @@ pub struct Peer {
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Wg {
-	#[serde(rename = "name")]
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub name: Option<String>,
 
-	#[serde(rename = "public")]
 	pub public: String,
 
-	#[serde(rename = "private")]
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub private: Option<String>,
 
-	#[serde(rename = "port")]
 	pub port: u16,
 
-	#[serde(rename = "ip")]
 	pub ip: Vec<ipnet::IpNet>,
-	// #[serde(skip_serializing_if = "Option::is_none")]
-	// #[serde(rename = "sign_data")]
-	// sign_data: Option<Vec<u8>>,
+
+	#[serde(default)]
+	pub fwmark: u32,
 }
 
 impl WgConfig {
@@ -226,13 +204,6 @@ impl Default for Discovery {
 			port: DEFAULT_WG_PORT,
 			interval: None,
 			stuns: DEFAULT_PUB_STUN_SERVERS.iter().map(|x| x.to_string()).collect(),
-			pubip: DEFAULT_PUBIP_DISCOVERY
-				.iter()
-				.map(|x| Pubip {
-					url: x.to_string(),
-					regex: None,
-				})
-				.collect(),
 			passive: None,
 		}
 	}
@@ -248,6 +219,7 @@ impl Wg {
 			private: Some(prikey),
 			port: DEFAULT_WG_PORT,
 			ip: vec![],
+			fwmark: 0,
 		}
 	}
 	pub fn clone_to_share(&self) -> Wg {
@@ -257,6 +229,7 @@ impl Wg {
 			private: None,
 			port: self.port,
 			ip: self.ip.clone(),
+			fwmark: 0,
 		}
 	}
 }

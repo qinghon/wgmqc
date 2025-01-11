@@ -18,7 +18,6 @@ base64 = "0.22"
 serde_yaml = "0.9.34"
 env_logger = "0.11"
 arc-swap = "1.7"
-reqwest = { version = "0.12", features = ["http2", "charset", "rustls-tls"], default-features = false }
 stunclient = "0.4"
 regex = "1.11"
 netdev = "0.31"
