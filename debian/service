@@ -1,0 +1,8 @@
+[Unit]
+Description=mqtt base wireguard client
+
+[Service]
+ExecStart=/usr/bin/wgmqc daemon
+
+[Install]
+WantedBy=multi-user.target
