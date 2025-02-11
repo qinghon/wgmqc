@@ -1,16 +1,15 @@
-use crate::bpf_instance::UpdateIntfs;
+
 use crate::config::{Peer, WgConfig};
 use crate::ice::IceAddr;
 use crate::mq_msg::{MqMsg, MqMsgType};
 use crate::portmap;
 use crate::portmap::portmap_loop;
-use crate::stun::stun_do_trans;
+use crate::stun::{stun_do_trans_raw};
 use crate::util::{Ipv6AddrC, IPADDRV4_UNSPECIFIED, IPADDRV6_UNSPECIFIED, SOCKETADDRV4_UNSPECIFIED};
 use crate::wg::WgIntf;
 use crate::*;
 use log::Level::Debug;
 use log::{debug, error, info, log_enabled, trace, warn};
-use netdev::Interface;
 use rumqttc::{ConnectReturnCode, Event, Incoming, MqttOptions, Transport};
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
@@ -20,10 +19,11 @@ use std::sync::{Arc, Mutex};
 use std::time;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::{TcpListener};
 use tokio::sync;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
+use crate::raw::RawUdpSocket;
 
 enum NetworkMessage {
 	Add((PathBuf, WgConfig)),
@@ -66,27 +66,33 @@ struct MqConnect {
 struct EchoServer {
 	enable_udp: bool,
 	enable_tcp: bool,
-	udp_socket: Option<UdpSocket>,
-	udp_socket6: Option<UdpSocket>,
+	udp_socket: Option<RawUdpSocket>,
+	udp_socket6: Option<RawUdpSocket>,
 	tcp_listener: Option<TcpListener>,
 	tcp_listener6: Option<TcpListener>,
 }
 
-fn new_ipv6_socket(addr: SocketAddr) -> Result<std::net::UdpSocket, io::Error> {
+fn new_ipv6_raw_socket(addr: SocketAddr) -> Result<RawUdpSocket, io::Error> {
 	let socket = socket2::Socket::new(
 		socket2::Domain::IPV6,
-		socket2::Type::DGRAM,
+		socket2::Type::RAW,
 		Some(socket2::Protocol::UDP),
-	)
-	.map_err(|e| io::Error::new(ErrorKind::Other, e))?;
+	).expect("cannot create raw socket");
 
-	socket.set_only_v6(true).map_err(|e| io::Error::new(ErrorKind::Other, e))?;
-	// socket.set_only_v6(true).unwrap();
+	// socket.set_only_v6(true).expect("cannot set only ipv6");
+	raw::apply_bpf_filter(&socket, addr.port(), false).expect("cannot apply raw socket");
 
-	socket.bind(&addr.into()).map_err(|e| io::Error::new(ErrorKind::AlreadyExists, e))?;
-	// socket.bind(&addr.into()).unwrap();
+	RawUdpSocket::new(socket, false)
+}
+fn new_ipv4_raw_socket(addr: SocketAddr) -> Result<RawUdpSocket, io::Error> {
+	let socket = socket2::Socket::new(
+		socket2::Domain::IPV4,
+		socket2::Type::RAW,
+		Some(socket2::Protocol::UDP),
+	)?;
+	raw::apply_bpf_filter(&socket, addr.port(), true)?;
 
-	Ok(socket.into())
+	RawUdpSocket::new(socket, true)
 }
 
 async fn tcp_steam_echo(mut stream: tokio::net::TcpStream, cancellation_token: CancellationToken) {
@@ -104,7 +110,7 @@ async fn tcp_steam_echo(mut stream: tokio::net::TcpStream, cancellation_token: C
 				Err(_) => break,
 				}
 			},
-			_ =cancellation_token.cancelled() => break,
+			_ = cancellation_token.cancelled() => break,
 		}
 	}
 }
@@ -113,10 +119,8 @@ impl EchoServer {
 	pub(crate) async fn new(udp_port: u16, tcp_port: u16) -> Result<Self, io::Error> {
 		let (udp4, udp6) = if udp_port != 0 {
 			(
-				Some(UdpSocket::bind(SocketAddr::new(IPADDRV4_UNSPECIFIED, udp_port)).await.expect("cannot bind4 udp")),
-				Some(UdpSocket::from_std(
-					new_ipv6_socket(SocketAddr::new(IPADDRV6_UNSPECIFIED, udp_port)).expect("cannot bind6 udp"),
-				)?),
+				Some(new_ipv4_raw_socket(SocketAddr::new(IPADDRV4_UNSPECIFIED, udp_port)).expect("cannot bind4 udp")),
+				Some(new_ipv6_raw_socket(SocketAddr::new(IPADDRV6_UNSPECIFIED, udp_port)).expect("cannot bind6 udp")),
 			)
 		} else {
 			(None, None)
@@ -139,7 +143,7 @@ impl EchoServer {
 			tcp_listener6: tcp6,
 		})
 	}
-	pub(crate) fn get_udp_sock(&self) -> &Option<UdpSocket> {
+	pub(crate) fn get_udp_sock(&self) -> &Option<RawUdpSocket> {
 		&self.udp_socket
 	}
 	pub(crate) async fn start_udp_echo(
@@ -157,28 +161,28 @@ impl EchoServer {
 		let len = buf.len();
 		let (buf4, buf6) = buf.split_at_mut(len / 2);
 		tokio::select! {
-		udp4_recv = udp_sock.as_ref().unwrap().recv_from(buf4) => {
+		udp4_recv = udp_sock.as_ref().unwrap().recv_from4(buf4) => {
 			match udp4_recv {
 				Err(e) => {
 					error!("udp recv error {}", e);
 				},
-				Ok((p, src)) => {
+				Ok((p, dst, src)) => {
 					trace!("udp recv from {}:{}", p, src);
 					if p > 0 {
-						let _ = udp_sock.as_ref().unwrap().send_to(&buf4[0..p], src).await;
+						let _ = udp_sock.as_ref().unwrap().send_to(&buf4[0..p], src, dst).await;
 					}
 				}
 			}
 		},
-		udp6_recv = udp_sock6.as_ref().unwrap().recv_from(buf6) => {
+		udp6_recv = udp_sock6.as_ref().unwrap().recv_from6(buf6) => {
 			match udp6_recv {
 				Err(e) => {
 					error!("udp recv error {}", e);
 				},
-				Ok((p, src)) => {
+				Ok((p, dst, src)) => {
 					trace!("udp recv from {}:{}", p, src);
 					if p > 0 {
-						let _ = udp_sock.as_ref().unwrap().send_to(&buf6[0..p], src).await;
+						let _ = udp_sock.as_ref().unwrap().send_to(&buf6[0..p], src, dst).await;
 					}
 				}
 			}
@@ -470,48 +474,6 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 		});
 	}
 
-	/*for lan_addr in ice_addr.lan {
-		rets.spawn(async move {
-			match analyze_addr_latency(lan_addr, udp).await {
-				Ok(l) => Ok((lan_addr, l)),
-				Err(e) => Err(e),
-			}
-		});
-	}
-
-	for ipv6_addr in ice_addr.ipv6 {
-		rets.spawn(async move {
-			match analyze_addr_latency(ipv6_addr, udp).await {
-				Ok(l) => Ok((ipv6_addr, l)),
-				Err(e) => Err(e),
-			}
-		});
-	}
-	for stun_addr in ice_addr.stun {
-		rets.spawn(async move {
-			match analyze_addr_latency(stun_addr, udp).await {
-				Ok(l) => Ok((stun_addr, l)),
-				Err(e) => Err(e),
-			}
-		});
-	}
-	for map_addr in ice_addr.port_map {
-		rets.spawn(async move {
-			match analyze_addr_latency(map_addr, udp).await {
-				Ok(l) => Ok((map_addr, l)),
-				Err(e) => Err(e),
-			}
-		});
-	}
-	for static_addr in ice_addr.statics {
-		rets.spawn(async move {
-			match analyze_addr_latency(static_addr, udp).await {
-				Ok(l) => Ok((static_addr, l)),
-				Err(e) => Err(e),
-			}
-		});
-	}*/
-
 	let res = tokio::select! {
 		v = rets.join_all() => v,
 		_ = cancellation_token.cancelled() => {
@@ -633,32 +595,10 @@ fn sync_conf_to_disk(conf_path: &PathBuf, conf: WgConfShare) -> bool {
 	need_reload
 }
 
-fn create_bpf_update_info(netid: &util::Key, intfs: &Vec<Interface>, wg_port: u16, echo_port: u16) -> UpdateIntfs {
-	let intf_ids = intfs.iter().map(|i| i.index).collect::<Vec<_>>();
-	let mut ips = Vec::new();
-
-	for intf in intfs.iter() {
-		for ip in intf.ipv4.iter() {
-			ips.push(ip.addr().into())
-		}
-		for ip in intf.ipv6.iter() {
-			ips.push(ip.addr().into())
-		}
-	}
-
-	UpdateIntfs {
-		netid: *netid,
-		ip: Some(ips),
-		intfs: Some(intf_ids),
-		portmaps: Some(vec![(wg_port, echo_port)]),
-		portmaps_out: Some(vec![(echo_port, wg_port)]),
-	}
-}
-
 // tcp mode:
 // wireguard: 51820(udp) echo_server: 51820(tcp)
 // udp mode:
-// wireguard: 51820(udp) echo_server: 51821(udp)
+// wireguard: 51820(udp) echo_server: 51820(raw)
 fn find_avail_wg_port(only_udp: bool, start_port: u16) -> u16 {
 	let mut sport = if start_port == 0 {
 		config::DEFAULT_WG_PORT
@@ -666,7 +606,7 @@ fn find_avail_wg_port(only_udp: bool, start_port: u16) -> u16 {
 		start_port
 	};
 	if only_udp {
-		while !(test_port_available(sport, true) && test_port_available(sport + 1, true)) {
+		while !test_port_available(sport, true) {
 			sport += 1
 		}
 		sport
@@ -895,9 +835,8 @@ async fn process_ctrl_msg(
 async fn wg_config_loop(
 	conf_path: PathBuf,
 	wg_config: WgConfig,
-	mut portmap_tx: sync::mpsc::Sender<portmap::MapAction>,
+	portmap_tx: sync::mpsc::Sender<portmap::MapAction>,
 	network_cancel: CancellationToken,
-	mut sender: Option<Sender<UpdateIntfs>>,
 	reload_tx: Sender<(PathBuf, WgConfig)>,
 ) {
 	let netname = wg_config.network.name.clone();
@@ -918,10 +857,10 @@ async fn wg_config_loop(
 	let wgapi: Arc<Mutex<Option<WgIntf>>> = Arc::new(Mutex::new(None));
 
 	let self_pubkey = wg_config.wg.public.clone();
-	let network_id = util::keystr_to_array(&wg_config.network.id).unwrap().into();
+	let network_id: util::Key = util::keystr_to_array(&wg_config.network.id).unwrap().into();
 
-	let bpf_sender = sender.as_mut();
-	let support_udp_mode = bpf_sender.is_some();
+	// let bpf_sender = sender.as_mut();
+	let support_udp_mode = true;
 	let passive_mode = wg_config.discovery.passive.unwrap_or(false);
 	let mut cur_port = wg_config.wg.port;
 
@@ -952,7 +891,7 @@ async fn wg_config_loop(
 		}
 	}
 	let echo_server = if support_udp_mode {
-		EchoServer::new(cur_port + 1, 0).await.expect("cannot create echo server")
+		EchoServer::new(cur_port, 0).await.expect("cannot create echo server")
 	} else {
 		EchoServer::new(0, cur_port).await.expect("cannot create echo server")
 	};
@@ -961,26 +900,26 @@ async fn wg_config_loop(
 	let udp_sock4 = echo_server.get_udp_sock();
 
 	let stun_udp_sock = if udp_sock4.is_some() {
-		Some((udp_sock4.as_ref().unwrap(), cur_port + 1))
+		Some(udp_sock4.as_ref().unwrap())
 	} else {
 		None
 	};
-	if support_udp_mode {
-		let ret = bpf_sender
-			.as_ref()
-			.unwrap()
-			.send(create_bpf_update_info(&network_id, &intfs, cur_port, cur_port + 1))
-			.await;
-		if ret.is_err() {
-			error!("cannot send bpf_updateinfo to bpf_sender: {}", ret.unwrap_err());
-		}
-		tokio::time::sleep(Duration::from_millis(100)).await;
-	}
+	// if support_udp_mode {
+	// 	let ret = bpf_sender
+	// 		.as_ref()
+	// 		.unwrap()
+	// 		.send(create_bpf_update_info(&network_id, &intfs, cur_port, cur_port + 1))
+	// 		.await;
+	// 	if ret.is_err() {
+	// 		error!("cannot send bpf_updateinfo to bpf_sender: {}", ret.unwrap_err());
+	// 	}
+	// 	tokio::time::sleep(Duration::from_millis(100)).await;
+	// }
 
-	let (mut pubaddr, mut nat_type) = stun_do_trans(
+	let (mut pubaddr, mut nat_type) = stun_do_trans_raw(
 		SocketAddr::new(IPADDRV4_UNSPECIFIED, cur_port),
 		conf.load().discovery.stuns.clone(),
-		stun_udp_sock,
+		stun_udp_sock.unwrap(),
 	)
 	.await
 	.unwrap_or((vec![], stun::StunType::Blocked));
@@ -1053,16 +992,16 @@ async fn wg_config_loop(
 					sync_wgintf(conf.clone(), wgapi.clone(), allow_peers_ref, &ifname);
 					debug!("get interface: {:?}", intfs);
 					update_ice_addr(cur_ice_addr_ref, &intfs, cur_port);
-					if support_udp_mode {
-						let ret = bpf_sender.as_ref().unwrap().send(create_bpf_update_info(&network_id, &intfs, cur_port, cur_port + 1)).await;
-						if ret.is_err() {
-							error!("cannot send bpf_updateinfo to bpf_sender: {}", ret.unwrap_err());
-						}
-					}
+					// if support_udp_mode {
+					// 	let ret = bpf_sender.as_ref().unwrap().send(create_bpf_update_info(&network_id, &intfs, cur_port, cur_port + 1)).await;
+					// 	if ret.is_err() {
+					// 		error!("cannot send bpf_updateinfo to bpf_sender: {}", ret.unwrap_err());
+					// 	}
+					// }
 
-					(pubaddr, nat_type) = stun_do_trans(SOCKETADDRV4_UNSPECIFIED,
+					(pubaddr, nat_type) = stun_do_trans_raw(SocketAddr::new(IPADDRV4_UNSPECIFIED, cur_port),
 							conf.load().discovery.stuns.clone(),
-							stun_udp_sock
+							stun_udp_sock.unwrap()
 						).await
 						.unwrap_or((vec![], stun::StunType::Blocked));
 					if nat_type != stun::StunType::Blocked && nat_type != stun::StunType::Symmetric {
@@ -1121,19 +1060,19 @@ async fn wg_config_loop(
 		}
 	}
 
-	if support_udp_mode {
-		let ret = bpf_sender
-			.as_ref()
-			.unwrap()
-			.send(UpdateIntfs {
-				netid: network_id,
-				..Default::default()
-			})
-			.await;
-		if ret.is_err() {
-			error!("cannot send delete bpf_update_info to bpf_sender: {}", ret.unwrap_err());
-		}
-	}
+	// if support_udp_mode {
+	// 	let ret = bpf_sender
+	// 		.as_ref()
+	// 		.unwrap()
+	// 		.send(UpdateIntfs {
+	// 			netid: network_id,
+	// 			..Default::default()
+	// 		})
+	// 		.await;
+	// 	if ret.is_err() {
+	// 		error!("cannot send delete bpf_update_info to bpf_sender: {}", ret.unwrap_err());
+	// 	}
+	// }
 	sync_peer_to_config(conf.clone(), allow_peers_ref);
 	sync_conf_to_disk(&conf_path, conf.clone());
 	// clean portmap
@@ -1164,7 +1103,6 @@ async fn network_loop(
 	portmap_tx: sync::mpsc::Sender<portmap::MapAction>,
 	mut rx: sync::mpsc::Receiver<NetworkMessage>,
 	main_cancel: CancellationToken,
-	sender: Option<Sender<UpdateIntfs>>,
 ) {
 	let set = tokio_util::task::TaskTracker::new();
 	let all_network_cancel = main_cancel.child_token();
@@ -1181,7 +1119,7 @@ async fn network_loop(
 						let child = all_network_cancel.child_token();
 						let id = conf.network.id.clone();
 						network_cancel.insert(id, child.clone());
-						set.spawn(wg_config_loop(conf_path, conf, portmap_tx.clone(), child, sender.clone(), reload_tx.clone()));
+						set.spawn(wg_config_loop(conf_path, conf, portmap_tx.clone(), child, reload_tx.clone()));
 					},
 					Some(NetworkMessage::Leave((_, conf))) => {
 						info!("leave network {}", conf.network.name);
@@ -1207,7 +1145,7 @@ async fn network_loop(
 				let child = all_network_cancel.child_token();
 				let id = conf.network.id.clone();
 				network_cancel.insert(id, child.clone());
-				set.spawn(wg_config_loop(conf_path, conf, portmap_tx.clone(), child, sender.clone(), reload_tx.clone()));
+				set.spawn(wg_config_loop(conf_path, conf, portmap_tx.clone(), child, reload_tx.clone()));
 
 			},
 			_ = main_cancel.cancelled() => {
@@ -1269,23 +1207,9 @@ pub fn start_daemon(config_dir: impl AsRef<Path> + Send + 'static) {
 		.block_on(async move {
 			let main_token = CancellationToken::new();
 
-			let (tx, rx) = tokio::sync::mpsc::channel(1);
-			let (ok_tx, ok_rx) = tokio::sync::oneshot::channel();
-			let bpf_handle = tokio::task::spawn(bpf_instance::bpf_event_loop(main_token.clone(), rx, ok_tx));
-			let sender;
-			tokio::select! {
-				bpf_result = bpf_handle => {
-					error!("cannot load bpf :{}", bpf_result.unwrap_err());
-					sender = None;
-				},
-				_ = ok_rx => {
-					sender = Some(tx);
-				}
-			}
-
 			let mut set = tokio::task::JoinSet::new();
 
-			set.spawn(network_loop(portmap_tx, network_rx, main_token.clone(), sender));
+			set.spawn(network_loop(portmap_tx, network_rx, main_token.clone()));
 			set.spawn(config_monitor(config_dir, network_tx, main_token.clone()));
 			set.spawn(portmap_loop(portmap_rx, main_token.clone()));
 
@@ -1310,7 +1234,7 @@ async fn wait_for_signal_impl() {
 	tokio::select! {
 		_ = signal_terminate.recv() => debug!("Received SIGTERM."),
 		_ = signal_interrupt.recv() => debug!("Received SIGINT."),
-	};
+	}
 }
 
 /// Waits for a signal that requests a graceful shutdown, Ctrl-C (SIGINT).
@@ -1342,9 +1266,6 @@ pub(crate) async fn wait_for_signal() {
 #[cfg(test)]
 mod tests {
 	use crate::daemon::test_port_available;
-	use rumqttc::{MqttOptions, Transport};
-	use std::time::Duration;
-	use url;
 
 	#[test]
 	fn test_test_port_available() {

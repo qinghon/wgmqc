@@ -3,7 +3,6 @@ use crate::util::Key;
 use anyhow::Error;
 use igd_next::Gateway;
 use log::{debug, error, info, warn};
-use natpmp_ng;
 pub(crate) use natpmp_ng::Protocol;
 use natpmp_ng::Response;
 use std::cmp::{max, min};
@@ -173,25 +172,19 @@ async fn start_action_map(
 	private_addr: SocketAddr,
 	public_port: u16,
 ) -> Result<u16, Error> {
-	let mut set = tokio::task::JoinSet::new();
-	if upnp_gw.is_some() {
-		set.spawn(start_action_map_upnp(upnp_gw, protocol, private_addr, public_port));
-	}
+	
 	if let Some(gw) = def_gw {
-		set.spawn(start_action_map_pmp(
+		if let Ok(Ok(p)) = tokio::time::timeout(Duration::from_secs(2), start_action_map_pmp(
 			gw,
 			protocol,
 			private_addr,
 			public_port,
-		));
+		)).await {
+  				return Ok(p);
+		}
 	}
-
-	while let Some(res) = set.join_next().await {
-		if let Ok(p) = res {
-  				if let Ok(rep) = p {
-  					return Ok(rep);
-  				}
-  			}
+	if upnp_gw.is_some() {
+		return start_action_map_upnp(upnp_gw, protocol, private_addr, public_port).await;
 	}
 	Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "cannot map port for any backend").into())
 }

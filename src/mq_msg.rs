@@ -156,7 +156,7 @@ mod tests {
 	}
 	fn test_mq_msg_verify() {
 		let alice_secret = StaticSecret::random();
-		let alice_public = x25519_dalek::PublicKey::from(&alice_secret);
+		// let alice_public = x25519_dalek::PublicKey::from(&alice_secret);
 		let mut mq = MqMsg {
 			t: MqMsgType::Announce(MsgAnnounce { wg: Wg::random_new() }),
 			salt: None,
