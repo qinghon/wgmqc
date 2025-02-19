@@ -172,12 +172,12 @@ impl UdpHdr {
 				chksum += saddr4.port() as u32;
 				chksum += raddr4.port() as u32;
 				chksum += (buf.len() + size_of::<Self>()) as u32;
-				for d in (0..buf.len()).step_by(2) {
+				for d in (0..buf.len() - (buf.len() & 1)).step_by(2) {
 					chksum += u16::from_be_bytes([buf[d], buf[d + 1]]) as u32;
 				}
 				
 				if (buf.len() & 1) != 0 {
-					chksum += buf[buf.len()] as u32;
+					chksum += buf[buf.len() - 1] as u32;
 				}
 
 				chksum = (chksum & 0xffff) + (chksum >> 16);
@@ -202,12 +202,12 @@ impl UdpHdr {
 				chksum += saddr6.port() as u32;
 				chksum += raddr6.port() as u32;
 
-				for i in (0..buf.len()).step_by(2) {
+				for i in (0..buf.len() - (buf.len() & 1)).step_by(2) {
 					chksum += u16::from_le_bytes([buf[i], buf[i + 1]]) as u32;
 				}
 				
 				if (buf.len() & 1) != 0 {
-					chksum += buf[buf.len()] as u32;
+					chksum += buf[buf.len() - 1] as u32;
 				}
 				
 				chksum = (chksum & 0xffff) + (chksum >> 16);
@@ -384,6 +384,34 @@ mod tests {
 		let laddr = SocketAddrV4::new(lip, 51821).into();
 
 		let buffer = [];
+		let udp = UdpHdr::from_buffer(&raddr, &laddr, &buffer);
+		println!("{}", udp);
+		let phdr = PHdr {
+			saddr: rip,
+			daddr: lip,
+			rsv: 0,
+			proto: 17,
+			len: (8u16 + buffer.len() as u16).to_be(),
+		};
+		let mut csum = 0u32;
+		for d in phdr.as_u16_slice() {
+			csum += (*d) as u32;
+		}
+		for d in udp.as_u16_slice() {
+			csum += (*d) as u32;
+		}
+		csum = (csum & 0xffff) + (csum >> 16);
+		csum = (csum & 0xffff) + (csum >> 16);
+		assert_eq!(!(csum as u16), 0);
+	}
+	#[test]
+	fn test_udp_cksum_buffer() {
+		let rip = Ipv4Addr::new(127, 0, 0, 1);
+		let lip = Ipv4Addr::new(127, 0, 0, 2);
+		let raddr = SocketAddrV4::new(rip, 3478).into();
+		let laddr = SocketAddrV4::new(lip, 51821).into();
+
+		let buffer = [0;9];
 		let udp = UdpHdr::from_buffer(&raddr, &laddr, &buffer);
 		println!("{}", udp);
 		let phdr = PHdr {
