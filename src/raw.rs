@@ -177,7 +177,7 @@ impl UdpHdr {
 				}
 				
 				if (buf.len() & 1) != 0 {
-					chksum += buf[buf.len() - 1] as u32;
+					chksum += ((buf[buf.len() - 1] as u16) << 8) as u32;
 				}
 
 				chksum = (chksum & 0xffff) + (chksum >> 16);
@@ -186,7 +186,7 @@ impl UdpHdr {
 					sport: saddr4.port().to_be(),
 					dport: raddr4.port().to_be(),
 					len: (buf.len() as u16 + 8u16).to_be(),
-					chksum: !(chksum as u16).to_be(),
+					chksum: (!(chksum as u16)).to_be(),
 				}
 			}
 			(SocketAddr::V6(raddr6), SocketAddr::V6(saddr6)) => {
@@ -395,10 +395,10 @@ mod tests {
 		};
 		let mut csum = 0u32;
 		for d in phdr.as_u16_slice() {
-			csum += (*d) as u32;
+			csum += (*d).to_be() as u32;
 		}
 		for d in udp.as_u16_slice() {
-			csum += (*d) as u32;
+			csum += (*d).to_be() as u32;
 		}
 		csum = (csum & 0xffff) + (csum >> 16);
 		csum = (csum & 0xffff) + (csum >> 16);
@@ -423,10 +423,10 @@ mod tests {
 		};
 		let mut csum = 0u32;
 		for d in phdr.as_u16_slice() {
-			csum += (*d) as u32;
+			csum += (*d).to_be() as u32;
 		}
 		for d in udp.as_u16_slice() {
-			csum += (*d) as u32;
+			csum += (*d).to_be() as u32;
 		}
 		csum = (csum & 0xffff) + (csum >> 16);
 		csum = (csum & 0xffff) + (csum >> 16);
@@ -452,17 +452,58 @@ mod tests {
 		};
 		let mut csum = 0u32;
 		for d in phdr.as_u16_slice() {
-			csum += (*d) as u32;
+			csum += (*d).to_be() as u32;
 		}
 		for d in udp.as_u16_slice() {
-			csum += (*d) as u32;
+			csum += (*d).to_be() as u32;
 		}
 		println!("{:?}", unsafe {mem::transmute::<[u8;32], [u16;16]>(buffer)});
 		for d in unsafe {mem::transmute::<[u8;32], [u16;16]>(buffer)} {
-			csum += d as u32;
+			csum += d.to_be() as u32;
 		}
 		csum = (csum & 0xffff) + (csum >> 16);
 		csum = (csum & 0xffff) + (csum >> 16);
+		assert_eq!(!(csum as u16), 0);
+	}
+	#[test]
+	fn test_udp_cksum_with_buffer_noalign() {
+		let rip = Ipv4Addr::new(127, 0, 0, 1);
+		let lip = Ipv4Addr::new(127, 0, 0, 1);
+		let raddr = SocketAddrV4::new(rip, 47986).into();
+		let laddr = SocketAddrV4::new(lip, 51820).into();
+		
+
+		let buffer = [0,0,0x0a];
+		let udp = UdpHdr::from_buffer(&raddr, &laddr, &buffer);
+		println!("csum {:04X}", udp.chksum);
+
+		let phdr = PHdr {
+			saddr: rip,
+			daddr: lip,
+			rsv: 0,
+			proto: 17,
+			len: (8u16 + buffer.len() as u16).to_be(),
+		};
+		let mut csum = 0u32;
+		for d in phdr.as_u16_slice() {
+			csum += (*d).to_be() as u32;
+		}
+		for d in udp.as_u16_slice() {
+			csum += (*d).to_be() as u32;
+		}
+		csum -= udp.chksum.to_be() as u32;
+		for d in buffer.chunks(2) {
+
+			csum += if d.len() ==2 { u16::from_be_bytes([d[0], d[1]]) as u32} else { 
+				u16::from_be_bytes([d[0], 0]) as u32
+			};
+		}
+		println!("csum-v {:04X}", csum);
+		csum += udp.chksum.to_be() as u32;
+
+		csum = (csum & 0xffff) + (csum >> 16);
+		csum = (csum & 0xffff) + (csum >> 16);
+		println!("chksum {:04X}", csum);
 		assert_eq!(!(csum as u16), 0);
 	}
 }
