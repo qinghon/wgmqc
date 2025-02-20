@@ -1,8 +1,12 @@
 [Unit]
 Description=mqtt base wireguard client
+After=network-online.target network.target
+Wants=network-online.target
 
 [Service]
 ExecStart=/usr/bin/wgmqc daemon
+Restart=always
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
