@@ -82,7 +82,7 @@ impl NetEntry {
 		self.mapped_port.clear();
 		for (port, proto) in self.ports.iter() {
 			let try_pub_port = port.clone();
-			for off in 0..65535 {
+			for off in 0..10 {
 				if try_pub_port + off == 0 {
 					continue;
 				}
