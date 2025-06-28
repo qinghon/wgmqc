@@ -33,7 +33,7 @@ impl WgIntf {
 		wg: &config::Wg,
 		peers: Option<Vec<config::Peer>>,
 	) -> Result<Self, WireguardInterfaceError> {
-		let wgapi = WGApi::new(ifname.to_string(), false)?;
+		let wgapi = WGApi::new(ifname.to_string())?;
 		// Create host interfaces
 		wgapi.create_interface()?;
 
@@ -56,9 +56,10 @@ impl WgIntf {
 		let interface_config = InterfaceConfiguration {
 			name: ifname.to_string(),
 			prvkey: wg.private.clone().unwrap(),
-			address: wg.ip[0].to_string(),
+			addresses: wg.ip.iter().map(|x| IpAddrMask::new(x.addr(), x.prefix_len())).collect(),
 			port: wg.port as _,
 			peers: def_peers,
+			mtu: None,
 		};
 
 		wgapi.configure_interface(&interface_config)?;
