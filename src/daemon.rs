@@ -1,5 +1,5 @@
 
-use crate::config::{Peer, WgConfig};
+use crate::config::{Discovery, Peer, WgConfig};
 use crate::ice::IceAddr;
 use crate::mq_msg::{MqMsg, MqMsgType};
 use crate::portmap;
@@ -492,7 +492,7 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 	new_ice_addr.iter().map(|(addr, _)| addr.clone()).collect()
 }
 
-fn update_ice_addr(ice_addr: &mut ice::IceAddr, intfs: &Vec<netdev::Interface>, cur_port: u16) {
+fn update_ice_addr(ice_addr: &mut ice::IceAddr, intfs: &Vec<netdev::Interface>, cur_port: u16, discovery: &Discovery) {
 	let mut ip4list = vec![];
 	let mut ip6list = vec![];
 	ice_addr.lan = vec![];
@@ -511,14 +511,26 @@ fn update_ice_addr(ice_addr: &mut ice::IceAddr, intfs: &Vec<netdev::Interface>, 
 		if ip4.is_private() {
 			ice_addr.lan.push(SocketAddr::V4(SocketAddrV4::new(ip4, cur_port)))
 		} else {
+			for port in &discovery.static_ports {
+				ice_addr.statics.push(SocketAddrV4::new(ip4, *port).into());
+			}
 			ice_addr.statics.push(SocketAddr::V4(SocketAddrV4::new(ip4, cur_port)))
 		}
 	}
+	
 	for ip6 in ip6list {
 		if Ipv6AddrC(ip6).is_global() {
+			for port in &discovery.static_ports {
+				ice_addr.statics.push(SocketAddr::V6(SocketAddrV6::new(ip6, *port, 0, 0)));
+			}
 			ice_addr.ipv6.push(SocketAddr::V6(SocketAddrV6::new(ip6, cur_port, 0, 0)))
 		} else {
 			ice_addr.lan.push(SocketAddr::V6(SocketAddrV6::new(ip6, cur_port, 0, 0)))
+		}
+	}
+	for static_ip in &discovery.static_ips {
+		for port in &discovery.static_ports {
+			ice_addr.statics.push(SocketAddr::new(*static_ip, *port).into());
 		}
 	}
 }
@@ -698,6 +710,7 @@ async fn process_ctrl_msg(
 				name: wg.name,
 				endpoint,
 				allow_ips: wg.ip,
+				..Default::default()
 			};
 
 			allow_peers_ref.insert(wg.public.clone(), peer);
@@ -730,6 +743,7 @@ async fn process_ctrl_msg(
 			if passive_mode {
 				debug!("node is passive mode, ignore peer update");
 			}
+			
 
 			let mut need_sync = false;
 
@@ -928,7 +942,7 @@ async fn wg_config_loop(
 		cur_ice_addr_ref.stun = pubaddr;
 	}
 
-	update_ice_addr(cur_ice_addr_ref, &intfs, cur_port);
+	update_ice_addr(cur_ice_addr_ref, &intfs, cur_port, &conf.load().discovery);
 
 	let mut udp_recv_buf = Box::new([0u8; 16384]);
 
@@ -991,13 +1005,7 @@ async fn wg_config_loop(
 				if !intfs.is_empty() {
 					sync_wgintf(conf.clone(), wgapi.clone(), allow_peers_ref, &ifname);
 					debug!("get interface: {:?}", intfs);
-					update_ice_addr(cur_ice_addr_ref, &intfs, cur_port);
-					// if support_udp_mode {
-					// 	let ret = bpf_sender.as_ref().unwrap().send(create_bpf_update_info(&network_id, &intfs, cur_port, cur_port + 1)).await;
-					// 	if ret.is_err() {
-					// 		error!("cannot send bpf_updateinfo to bpf_sender: {}", ret.unwrap_err());
-					// 	}
-					// }
+					update_ice_addr(cur_ice_addr_ref, &intfs, cur_port, &conf.load().discovery);
 
 					(pubaddr, nat_type) = stun_do_trans_raw(SocketAddr::new(IPADDRV4_UNSPECIFIED, cur_port),
 							conf.load().discovery.stuns.clone(),
@@ -1005,8 +1013,16 @@ async fn wg_config_loop(
 						).await
 						.unwrap_or((vec![], stun::StunType::Blocked));
 					if nat_type != stun::StunType::Blocked && nat_type != stun::StunType::Symmetric {
+						for pub_ip in &pubaddr {
+							for static_port in &conf.load().discovery.static_ports {
+								cur_ice_addr_ref.statics.push(SocketAddr::new(pub_ip.ip(), *static_port).into());
+							}
+						}
 						cur_ice_addr_ref.stun = pubaddr;
+						
+						
 					}
+					
 					if ! sended_port_map {
 						if let Ok(_) = portmap_tx.send(portmap::MapAction::AddMaps {
 							key: network_id.clone(),

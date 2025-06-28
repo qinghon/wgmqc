@@ -42,7 +42,7 @@ impl WgIntf {
 				.iter()
 				.map(|x| defguard_wireguard_rs::host::Peer {
 					public_key: keystr_to_key(&x.key).unwrap(),
-					endpoint: x.endpoint,
+					endpoint: if ! x.passive{ x.endpoint } else { None },
 					persistent_keepalive_interval: Some(20),
 					allowed_ips: x.allow_ips.iter().map(|x| IpAddrMask::new(x.addr(), x.max_prefix_len())).collect(),
 					..Default::default()
@@ -107,11 +107,18 @@ impl WgIntf {
 				let self_peer_exist = self.cur_conf.peers.iter().any(|x| x.public_key == update_k);
 				let update_peer_allow_ips =
 					peer.allow_ips.iter().map(|x| IpAddrMask::new(x.addr(), x.max_prefix_len())).collect();
+				let endpoint = if peer.passive {
+					None
+				}else { 
+					peer.endpoint
+				};
 				match (host_peer_exist, self_peer_exist) {
 					(true, true) => {
 						let host_peer = host.peers.get(&update_k).unwrap();
 						let self_peer = self.cur_conf.peers.iter_mut().find(|x| x.public_key == update_k).unwrap();
-						self_peer.endpoint = peer.endpoint;
+						if ! peer.passive {
+							self_peer.endpoint = endpoint;
+						}
 						self_peer.allowed_ips = update_peer_allow_ips;
 						self_peer.persistent_keepalive_interval = Some(20);
 
@@ -126,7 +133,7 @@ impl WgIntf {
 								"{} update peer \"{}\" endpint={:?} allow_ip={:?}",
 								self.ifname,
 								peer.name.as_ref().unwrap_or(&peer.key),
-								peer.endpoint,
+								self_peer.endpoint,
 								peer.allow_ips
 							);
 							self.wgapi.configure_peer(
@@ -140,7 +147,9 @@ impl WgIntf {
 					}
 					(false, true) => {
 						let self_peer = self.cur_conf.peers.iter_mut().find(|x| x.public_key == update_k).unwrap();
-						self_peer.endpoint = peer.endpoint;
+						if ! peer.passive {
+							self_peer.endpoint = endpoint;
+						}
 						self_peer.allowed_ips = update_peer_allow_ips;
 						self_peer.persistent_keepalive_interval = Some(20);
 						info!(
@@ -156,7 +165,7 @@ impl WgIntf {
 					(false, false) => {
 						let self_peer = defguard_wireguard_rs::host::Peer {
 							public_key: update_k,
-							endpoint: peer.endpoint,
+							endpoint,
 							persistent_keepalive_interval: Some(20),
 							allowed_ips: update_peer_allow_ips,
 							..Default::default()

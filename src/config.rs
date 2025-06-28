@@ -4,7 +4,7 @@ use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::{error, fs, io};
@@ -12,10 +12,10 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 pub const DEFAULT_WG_PORT: u16 = 51820;
 pub const DEFAULT_PUB_STUN_SERVERS: [&str; 4] = [
+	"stun.miwifi.com:3478",
 	"stun.chat.bilibili.com:3478",
 	"stun.hot-chilli.net:3478",
 	"stun1.l.google.com:19302",
-	"stun.miwifi.com:3478",
 ];
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -51,6 +51,16 @@ pub struct Discovery {
 
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub passive: Option<bool>,
+
+	/// static port map on firewall
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	#[serde(default)]
+	pub static_ports: Vec<u16>,
+
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	#[serde(default)]
+	pub static_ips: Vec<IpAddr>,
+
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -153,6 +163,11 @@ pub struct Peer {
 
 	#[serde(rename = "allow_ips")]
 	pub allow_ips: Vec<ipnet::IpNet>,
+
+	/// 接受peer连接而不主动更新peer 地址
+	/// 更细粒度的静态模式
+	#[serde(default)]
+	pub passive: bool,
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -205,6 +220,8 @@ impl Default for Discovery {
 			interval: None,
 			stuns: DEFAULT_PUB_STUN_SERVERS.iter().map(|x| x.to_string()).collect(),
 			passive: None,
+			static_ports: vec![],
+			static_ips: vec![],
 		}
 	}
 }
