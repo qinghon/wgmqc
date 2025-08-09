@@ -1,5 +1,5 @@
 use crate::util::Ipv6AddrC;
-use socket2::{MaybeUninitSlice, Socket};
+use socket2::{MaybeUninitSlice, SockFilter, Socket};
 use std::fmt::Formatter;
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
@@ -11,7 +11,7 @@ macro_rules! sock_filters {
     ( $( { $code:expr, $jt:expr, $jf:expr, $k:expr } ),* ) => {
         [
             $(
-                libc::sock_filter { code: $code, jt: $jt, jf: $jf, k: $k, }
+                SockFilter::new($code, $jt, $jf, $k)
             ),*
         ]
     };
@@ -366,8 +366,8 @@ impl RawUdpSocket {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use rand::Rng;
-	pub struct PHdr {
+	use rand::random;
+	struct PHdr {
 		pub saddr: Ipv4Addr,
 		pub daddr: Ipv4Addr,
 		pub rsv: u8,
@@ -440,7 +440,7 @@ mod tests {
 		let raddr = SocketAddrV4::new(rip, 3478).into();
 		let laddr = SocketAddrV4::new(lip, 51820).into();
 
-		let buffer = rand::thread_rng().gen::<[u8; 32]>();
+		let buffer = random::<[u8; 32]>();
 		let udp = UdpHdr::from_buffer(&raddr, &laddr, &buffer);
 
 		let phdr = PHdr {

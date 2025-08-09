@@ -31,7 +31,7 @@ xeddsa = "1.0"
 rand = "0.8"
 ed25519 = "2.2"
 tokio-util = { version = "0.7", features = ["rt"] }
-socket2 = "0.5"
+socket2 = { version = "0.6", features = ["all"] }
 anyhow = "1.0"
 stun_codec = "0.3"
 bytecodec = "0.4"
