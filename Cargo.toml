@@ -12,11 +12,9 @@ defguard_wireguard_rs = "0.7"
 rumqttc = { version = "0.24", features = ["websocket", "url"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["fs", "net", "sync", "signal", "rt-multi-thread"] }
-log = "0.4"
 x25519-dalek = { version = "2.0", features = ["getrandom", "static_secrets"] }
 base64 = "0.22"
 serde_yaml = "0.9.34"
-env_logger = "0.11"
 arc-swap = "1.7"
 stunclient = "0.4"
 regex = "1.11"
@@ -35,6 +33,8 @@ socket2 = { version = "0.6", features = ["all"] }
 anyhow = "1.0"
 stun_codec = "0.3"
 bytecodec = "0.4"
+tracing = "0.1.43"
+tracing-subscriber = {version =  "0.3.22", features = ["env-filter"] }
 
 
 [profile.release.package."*"]

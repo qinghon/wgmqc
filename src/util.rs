@@ -137,6 +137,7 @@ pub fn filter_avail_interface(policy: &InterfacePolicy) -> Vec<netdev::Interface
 				i.name.starts_with("tun") ||
 				i.name.starts_with("tap") ||
 				i.name.starts_with("feth") ||
+				i.name.starts_with("tailscale") ||
 				i.is_loopback()
 			{
 				false

@@ -2,7 +2,7 @@ use crate::util;
 use crate::util::Key;
 use anyhow::Error;
 use igd_next::Gateway;
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 pub(crate) use natpmp_ng::Protocol;
 use natpmp_ng::Response;
 use std::cmp::{max, min};

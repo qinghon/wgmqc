@@ -4,7 +4,7 @@ use defguard_wireguard_rs::error::WireguardInterfaceError;
 pub use defguard_wireguard_rs::host::Peer;
 use defguard_wireguard_rs::net::IpAddrMask;
 use defguard_wireguard_rs::{InterfaceConfiguration, WGApi, WireguardInterfaceApi};
-use log::{debug, info};
+use tracing::{debug, info};
 
 pub(crate) fn keystr_to_key(s: &str) -> Option<defguard_wireguard_rs::key::Key> {
 	let pri_key = base64::prelude::BASE64_STANDARD.decode(s);
@@ -106,7 +106,7 @@ impl WgIntf {
 				let host_peer_exist = host.peers.contains_key(&update_k);
 				let self_peer_exist = self.cur_conf.peers.iter().any(|x| x.public_key == update_k);
 				let update_peer_allow_ips =
-					peer.allow_ips.iter().map(|x| IpAddrMask::new(x.addr(), x.max_prefix_len())).collect();
+					peer.allow_ips.iter().map(|x| IpAddrMask::new(x.addr(), x.prefix_len())).collect();
 				let endpoint = if peer.passive {
 					None
 				}else { 

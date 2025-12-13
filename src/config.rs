@@ -1,6 +1,6 @@
 use crate::util;
 use base64::Engine;
-use log::error;
+use tracing::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};

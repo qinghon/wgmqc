@@ -1,6 +1,7 @@
 use base64::Engine;
 use clap::{Args, Parser, Subcommand};
-use log::{debug, error};
+
+use tracing::{debug, error};
 use std::fs;
 use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
@@ -109,10 +110,17 @@ fn main() {
 	// The `Env` lets us tweak what the environment
 	// variables to read are and what the default
 	// value is if they're missing
-	let env = env_logger::Env::default()
-		.filter_or("WG_LOG_LEVEL", "info")
-		.write_style_or("WG_LOG_STYLE", "SYSTEMD");
-	env_logger::init_from_env(env);
+	use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+	tracing_subscriber::fmt()
+		.compact()
+		.with_max_level(tracing::Level::INFO)
+		.with_target(false)
+		.with_thread_ids(false)
+		.with_env_filter(
+			EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+		)
+		.init();
+
 
 	let args = Cli::parse();
 

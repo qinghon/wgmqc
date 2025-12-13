@@ -3,15 +3,15 @@ use crate::raw::RawUdpSocket;
 use crate::util::SOCKETADDRV4_UNSPECIFIED;
 use anyhow::Error;
 use bytecodec::{DecodeExt, EncodeExt};
-use log::{debug, error, info};
+use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::time::Duration;
-use std::io;
 use stun_codec::rfc5389::attributes::{MappedAddress, Software, XorMappedAddress};
 use stun_codec::rfc5389::{methods::BINDING, Attribute};
 use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder, TransactionId};
 use stunclient::StunClient;
 use tokio::net::UdpSocket;
+use tracing::{debug, error, info};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum StunType {
@@ -359,10 +359,15 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_stun() {
-		let env = env_logger::Env::default()
-			.filter_or("WG_LOG_LEVEL", "info")
-			.write_style_or("WG_LOG_STYLE", "SYSTEMD");
-		env_logger::init_from_env(env);
+		use tracing_subscriber::{prelude::*, EnvFilter};
+		tracing_subscriber::fmt()
+			.with_max_level(tracing::Level::INFO)
+			.with_target(false)
+			.with_thread_ids(false)
+			.with_env_filter(
+				EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+			)
+			.init();
 
 		let res = stun_do_trans(
 			util::SOCKETADDRV4_UNSPECIFIED,

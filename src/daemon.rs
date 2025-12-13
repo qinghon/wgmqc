@@ -8,8 +8,7 @@ use crate::stun::{stun_do_trans_raw};
 use crate::util::{Ipv6AddrC, IPADDRV4_UNSPECIFIED, IPADDRV6_UNSPECIFIED, SOCKETADDRV4_UNSPECIFIED};
 use crate::wg::WgIntf;
 use crate::*;
-use log::Level::Debug;
-use log::{debug, error, info, log_enabled, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use rumqttc::{ConnectReturnCode, Event, Incoming, MqttOptions, Transport};
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
@@ -18,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time;
 use std::time::{Duration, Instant};
+use ipnet::IpNet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener};
 use tokio::sync;
@@ -379,21 +379,13 @@ impl MqConnect {
 		let start = Instant::now();
 		let ret = self.client.publish(&self.subcribe_path, rumqttc::QoS::AtMostOnce, false, data).await;
 		if ret.is_err() {
-			if log_enabled!(Debug) {
-				debug!(
-					"network {} cannot push data {:?}: {}",
-					self.netname,
-					msg,
-					ret.unwrap_err()
-				);
-			} else {
 				error!(
 					"network {} cannot push data {:?}: {}",
 					self.netname,
 					msg.t,
 					ret.unwrap_err()
 				);
-			}
+
 		}
 		debug!("network {} send msg time: {:?}", self.netname, start.elapsed());
 		Ok(())
@@ -577,7 +569,7 @@ fn sync_conf_to_disk(conf_path: &PathBuf, conf: WgConfShare) -> bool {
 	if let Ok(v) = config::read_config_file(conf_path) {
 		let mut cur_conf = conf.load().copy();
 
-		let skip_dump = v.status != cur_conf.status;
+		let skip_dump = v.status == cur_conf.status;
 
 		if cur_conf.wg != v.wg || cur_conf.network != v.network || cur_conf.discovery != v.discovery {
 			cur_conf.wg = v.wg;
@@ -592,7 +584,7 @@ fn sync_conf_to_disk(conf_path: &PathBuf, conf: WgConfShare) -> bool {
 			return need_reload;
 		}
 	};
-
+	debug!("sync config to disk {}", conf_path.as_path().display());
 	let yaml = match serde_yaml::to_string(&conf.load().copy()) {
 		Ok(v) => v,
 		Err(e) => {
@@ -647,7 +639,7 @@ fn sync_peer_to_config(conf: WgConfShare, peer_map: &mut HashMap<String, Peer>) 
 			if new_config.is_none() {
 				new_config.replace(config.copy());
 			}
-
+			debug!("{:?} sync_peer_to_config add peer {:?}", config.wg.name, peer.name);
 			new_config.as_mut().unwrap().add_peer(peer.clone());
 			continue;
 		}
@@ -670,11 +662,13 @@ fn sync_peer_to_config(conf: WgConfShare, peer_map: &mut HashMap<String, Peer>) 
 			if new_config.is_none() {
 				new_config.replace(config.copy());
 			}
+			debug!("{:?} sync_peer_to_config remove peer {:?}", config.wg.name, peer.name);
 			new_config.as_mut().unwrap().remove_peer(&peer.key);
 		}
 	}
 
 	if let Some(new) = new_config {
+		debug!("{:?} update config {:?}", new.wg.name, new);
 		conf.store(Arc::new(new));
 	}
 }
@@ -706,10 +700,10 @@ async fn process_ctrl_msg(
 				endpoint = None;
 			}
 			let peer = config::Peer {
-				key: (&wg.public).clone(),
+				key: wg.public.clone(),
 				name: wg.name,
 				endpoint,
-				allow_ips: wg.ip,
+				allow_ips: wg.ip.iter().map(|x|IpNet::new(x.addr(), x.max_prefix_len()).unwrap()).collect(),
 				..Default::default()
 			};
 
@@ -756,7 +750,10 @@ async fn process_ctrl_msg(
 				}
 			}
 			if let Some(p) = allow_peers_ref.get_mut(&wg.public) {
-				p.allow_ips = wg.ip;
+				// p.allow_ips = wg.ip;
+				let need_add_allow =wg.ip.iter().map(|x|IpNet::new(x.addr(), x.max_prefix_len()).unwrap()).filter(|x| ! p.allow_ips.contains(x)).collect::<HashSet<_>>();
+				p.allow_ips.extend(need_add_allow);
+				p.allow_ips = p.allow_ips.drain(..).collect::<HashSet<_>>().into_iter().collect();
 				let old_ep = p.endpoint.clone();
 				let mut cur_endpoint = None;
 				let mut cur_last_handshake = Duration::MAX;
@@ -853,6 +850,7 @@ async fn wg_config_loop(
 	network_cancel: CancellationToken,
 	reload_tx: Sender<(PathBuf, WgConfig)>,
 ) {
+	debug!("start config loop {:?} wg_config={:?}", conf_path, wg_config);
 	let netname = wg_config.network.name.clone();
 	// Create new API struct for interface
 	let ifname: String = if cfg!(target_os = "linux") || cfg!(target_os = "freebsd") {
