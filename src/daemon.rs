@@ -843,7 +843,7 @@ async fn config_monitor(
 ) {
 	let mut prev_configs: HashMap<PathBuf, WgConfig> = HashMap::new();
 	let mut prev_configs_values = vec![];
-	let mut interval = tokio::time::interval(time::Duration::from_secs(5));
+	let mut interval = tokio::time::interval(Duration::from_secs(5));
 	loop {
 		tokio::select! {
 			_ = main_cancel.cancelled() => {
@@ -851,10 +851,10 @@ async fn config_monitor(
 			}
 			_ = interval.tick() => {
 				let new_configs = config::load_all_net_map(&config_dir);
-				let new_configs_values:Vec<_> = new_configs.clone().into_iter().map(|x| x.1).collect();
+				let new_configs_values:Vec<_> = new_configs.clone().into_values().map(|conf| conf.wg.public).collect();
 
-				let del:Vec<_> = prev_configs.clone().into_iter().filter(|(_, item)|!new_configs_values.contains(item)).collect();
-				let add: Vec<_> = new_configs.clone().into_iter().filter(|(_, item)| !prev_configs_values.contains(item)).collect();
+				let del:Vec<_> = prev_configs.clone().into_iter().filter(|(_, item)|!new_configs_values.contains(&item.wg.public)).collect();
+				let add: Vec<_> = new_configs.clone().into_iter().filter(|(_, item)| !prev_configs_values.contains(&item.wg.public)).collect();
 
 				for conf in del {
 					let _ = network_tx.send(NetworkMessage::Leave(conf)).await;
