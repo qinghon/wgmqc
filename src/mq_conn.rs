@@ -1,13 +1,13 @@
+use crate::config::WgConfig;
+use crate::daemon::WgCtrlMsg;
+use crate::mq_msg::{MqMsg, MqMsgType};
+use crate::{Error, mq_msg, util};
+use rumqttc::{MqttOptions, Transport};
 use std::io;
 use std::io::ErrorKind;
 use std::time::{Duration, Instant};
-use rumqttc::{MqttOptions, Transport};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
-use crate::config::WgConfig;
-use crate::{mq_msg, util, Error};
-use crate::daemon::WgCtrlMsg;
-use crate::mq_msg::{MqMsg, MqMsgType};
 
 pub(crate) struct MqConnect {
 	client: rumqttc::AsyncClient,
@@ -183,12 +183,11 @@ impl MqConnect {
 		let ret = self.client.publish(&self.subcribe_path, rumqttc::QoS::AtMostOnce, false, data).await;
 		if ret.is_err() {
 			error!(
-					"network {} cannot push data {:?}: {}",
-					self.netname,
-					msg.t,
-					ret.unwrap_err()
-				);
-
+				"network {} cannot push data {:?}: {}",
+				self.netname,
+				msg.t,
+				ret.unwrap_err()
+			);
 		}
 		debug!("network {} send msg time: {:?}", self.netname, start.elapsed());
 		Ok(())

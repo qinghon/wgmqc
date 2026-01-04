@@ -7,7 +7,7 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::time::Duration;
 use stun_codec::rfc5389::attributes::{MappedAddress, Software, XorMappedAddress};
-use stun_codec::rfc5389::{methods::BINDING, Attribute};
+use stun_codec::rfc5389::{Attribute, methods::BINDING};
 use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder, TransactionId};
 use stunclient::StunClient;
 use tokio::net::UdpSocket;
@@ -28,10 +28,7 @@ async fn stun_get_external_addr(udp: &UdpSocket, raddr: String) -> Result<Socket
 
 	let stun_addr = raddr.to_socket_addrs()?.find(|x| x.is_ipv4());
 	if stun_addr.is_none() {
-		return Err(io::Error::new(
-			io::ErrorKind::AddrNotAvailable,
-			"cannot resolv avail ipv4 addr",
-		).into());
+		return Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "cannot resolv avail ipv4 addr").into());
 	}
 	let stun_addr = stun_addr.unwrap();
 	let c = StunClient::new(stun_addr);
@@ -137,22 +134,17 @@ pub async fn stun_do_trans(
 	Ok((vec![], StunType::Blocked))
 }
 
-
 fn decode_address(buf: &[u8]) -> Result<SocketAddr, Error> {
 	let mut decoder = MessageDecoder::<Attribute>::new();
 	let decoded = decoder
 		.decode_from_bytes(buf)?
-		.map_err(|e|io::Error::new(io::ErrorKind::InvalidData, e.error().to_owned()))?;
+		.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.error().to_owned()))?;
 
 	//eprintln!("Decoded message: {:?}", decoded);
 
-	let external_addr1 = decoded
-		.get_attribute::<XorMappedAddress>()
-		.map(|x| x.address());
+	let external_addr1 = decoded.get_attribute::<XorMappedAddress>().map(|x| x.address());
 	//let external_addr2 = decoded.get_attribute::<XorMappedAddress2>().map(|x|x.address());
-	let external_addr3 = decoded
-		.get_attribute::<MappedAddress>()
-		.map(|x| x.address());
+	let external_addr3 = decoded.get_attribute::<MappedAddress>().map(|x| x.address());
 	let external_addr = external_addr1
 		// .or(external_addr2)
 		.or(external_addr3);
@@ -164,22 +156,14 @@ fn get_binding_request() -> Result<Vec<u8>, Error> {
 	use rand::Rng;
 	let random_bytes = rand::thread_rng().gen::<[u8; 12]>();
 
-	let mut message: Message<Attribute> = Message::new(
-		MessageClass::Request,
-		BINDING,
-		TransactionId::new(random_bytes),
-	);
+	let mut message: Message<Attribute> =
+		Message::new(MessageClass::Request, BINDING, TransactionId::new(random_bytes));
 
-	
-	message.add_attribute(Attribute::Software(
-		Software::new("wgmqc".to_owned())?,
-	));
-	
+	message.add_attribute(Attribute::Software(Software::new("wgmqc".to_owned())?));
 
 	// Encodes the message
 	let mut encoder = MessageEncoder::new();
-	let bytes = encoder
-		.encode_into_bytes(message.clone())?;
+	let bytes = encoder.encode_into_bytes(message.clone())?;
 	Ok(bytes)
 }
 
@@ -188,28 +172,28 @@ async fn query_external_address_async_impl(
 	stun_server: SocketAddr,
 	local_addr: SocketAddr,
 ) -> Result<SocketAddr, Error> {
-	let mut interval = tokio::time::interval(Duration::new(2,0));
+	let mut interval = tokio::time::interval(Duration::new(2, 0));
 	interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
 	let rq = get_binding_request()?;
-	let mut buf : [u8; 256]= [0;256];
+	let mut buf: [u8; 256] = [0; 256];
 
 	loop {
 		tokio::select! {
-                biased; // to make impl simpler
-                _t = interval.tick() => {
-                    udp.send_to(&rq[..], stun_server, local_addr).await?;
-                }
-                c = udp.recv_from(&mut buf) => {
-                    let (len, from) = c?;
-                    if from != stun_server {
-                        continue;
-                    }
-                    let buf = &buf[0..len];
-                    let external_addr = decode_address(buf)?;
-                    return Ok(external_addr);
-                }
-            }
+			biased; // to make impl simpler
+			_t = interval.tick() => {
+				udp.send_to(&rq[..], stun_server, local_addr).await?;
+			}
+			c = udp.recv_from(&mut buf) => {
+				let (len, from) = c?;
+				if from != stun_server {
+					continue;
+				}
+				let buf = &buf[0..len];
+				let external_addr = decode_address(buf)?;
+				return Ok(external_addr);
+			}
+		}
 	}
 }
 pub async fn query_external_address_async(
@@ -217,10 +201,8 @@ pub async fn query_external_address_async(
 	stun_server: SocketAddr,
 	local_addr: SocketAddr,
 ) -> Result<SocketAddr, Error> {
-	let timeout = Duration::new(10,0);
-	let ret = tokio::time::timeout(timeout, 
-								   query_external_address_async_impl(udp, stun_server, local_addr)
-	).await;
+	let timeout = Duration::new(10, 0);
+	let ret = tokio::time::timeout(timeout, query_external_address_async_impl(udp, stun_server, local_addr)).await;
 	match ret {
 		Ok(Ok(x)) => Ok(x),
 		Ok(Err(e)) => Err(e),
@@ -228,15 +210,16 @@ pub async fn query_external_address_async(
 	}
 }
 
-async fn stun_get_external_addr_raw(udp: &RawUdpSocket, local_port:u16, raddr: String) -> Result<(SocketAddr, SocketAddr), Error> {
+async fn stun_get_external_addr_raw(
+	udp: &RawUdpSocket,
+	local_port: u16,
+	raddr: String,
+) -> Result<(SocketAddr, SocketAddr), Error> {
 	info!("get raddr {}", raddr);
 
 	let stun_addr = raddr.to_socket_addrs()?.find(|x| x.is_ipv4());
 	if stun_addr.is_none() {
-		return Err(io::Error::new(
-			io::ErrorKind::AddrNotAvailable,
-			"cannot resolv avail ipv4 addr",
-		).into());
+		return Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "cannot resolv avail ipv4 addr").into());
 	}
 	let stun_addr = stun_addr.unwrap();
 	// get fill local addr
@@ -244,9 +227,9 @@ async fn stun_get_external_addr_raw(udp: &RawUdpSocket, local_port:u16, raddr: S
 	prob_udp.connect(stun_addr).await?;
 	let mut local_addr = prob_udp.local_addr()?;
 	drop(prob_udp);
-	
+
 	local_addr.set_port(local_port);
-	
+
 	let f = query_external_address_async(udp, stun_addr, local_addr).await;
 	match f {
 		Ok(addr) => Ok((local_addr, addr)),
@@ -257,13 +240,12 @@ async fn stun_get_external_addr_raw(udp: &RawUdpSocket, local_port:u16, raddr: S
 pub async fn stun_do_trans_raw(
 	laddr: SocketAddr,
 	raddr: Vec<String>,
-	udpsock: &RawUdpSocket
+	udpsock: &RawUdpSocket,
 ) -> io::Result<(Vec<SocketAddr>, StunType)> {
 	if raddr.is_empty() {
 		return Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "addr is empty"));
 	}
 	let _udp = std::net::UdpSocket::bind(SOCKETADDRV4_UNSPECIFIED)?;
-	
 
 	debug!("stun do trans: {} {:?}", laddr, raddr);
 
@@ -359,14 +341,12 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_stun() {
-		use tracing_subscriber::{prelude::*, EnvFilter};
+		use tracing_subscriber::{EnvFilter, prelude::*};
 		tracing_subscriber::fmt()
 			.with_max_level(tracing::Level::INFO)
 			.with_target(false)
 			.with_thread_ids(false)
-			.with_env_filter(
-				EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-			)
+			.with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
 			.init();
 
 		let res = stun_do_trans(

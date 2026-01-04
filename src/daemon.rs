@@ -1,28 +1,27 @@
-
 use crate::config::{Discovery, Peer, WgConfig};
 use crate::ice::IceAddr;
 use crate::mq_msg::{MqMsg, MqMsgType};
 use crate::portmap;
 use crate::portmap::portmap_loop;
-use crate::stun::{stun_do_trans_raw};
-use crate::util::{Ipv6AddrC, IPADDRV4_UNSPECIFIED, SOCKETADDRV4_UNSPECIFIED};
+use crate::stun::stun_do_trans_raw;
+use crate::util::{IPADDRV4_UNSPECIFIED, Ipv6AddrC, SOCKETADDRV4_UNSPECIFIED};
 use crate::wg::WgIntf;
 use crate::*;
 use tracing::{debug, error, info, warn};
 
+use crate::echo::EchoServer;
+use crate::mq_conn::MqConnect;
+use ipnet::IpNet;
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time;
 use std::time::Duration;
-use ipnet::IpNet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
-use crate::echo::EchoServer;
-use crate::mq_conn::MqConnect;
 
 enum NetworkMessage {
 	Add((PathBuf, WgConfig)),
@@ -52,7 +51,6 @@ pub(crate) enum WgCtrlMsg {
 }
 
 pub(crate) type WgConfShare = Arc<arc_swap::ArcSwap<WgConfig>>;
-
 
 async fn analyze_tcp_latency(addr: SocketAddr) -> Result<Duration, io::Error> {
 	let mut stream = match tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(addr)).await {
@@ -135,9 +133,9 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 		},
 	};
 	for addr in res.into_iter().flatten() {
- 			debug!("addr test: {} latency={:?}", addr.0, addr.1);
- 			new_ice_addr.push(addr);
- 		}
+		debug!("addr test: {} latency={:?}", addr.0, addr.1);
+		new_ice_addr.push(addr);
+	}
 
 	new_ice_addr.sort_by(|(_, al), (_, bl)| al.cmp(bl));
 
@@ -169,7 +167,7 @@ fn update_ice_addr(ice_addr: &mut ice::IceAddr, intfs: &Vec<netdev::Interface>, 
 			ice_addr.statics.push(SocketAddr::V4(SocketAddrV4::new(ip4, cur_port)))
 		}
 	}
-	
+
 	for ip6 in ip6list {
 		if Ipv6AddrC(ip6).is_global() {
 			for port in &discovery.static_ports {
@@ -363,7 +361,7 @@ async fn process_ctrl_msg(
 				key: wg.public.clone(),
 				name: wg.name,
 				endpoint,
-				allow_ips: wg.ip.iter().map(|x|IpNet::new(x.addr(), x.max_prefix_len()).unwrap()).collect(),
+				allow_ips: wg.ip.iter().map(|x| IpNet::new(x.addr(), x.max_prefix_len()).unwrap()).collect(),
 				..Default::default()
 			};
 
@@ -397,7 +395,6 @@ async fn process_ctrl_msg(
 			if passive_mode {
 				debug!("node is passive mode, ignore peer update");
 			}
-			
 
 			let mut need_sync = false;
 
@@ -411,7 +408,12 @@ async fn process_ctrl_msg(
 			}
 			if let Some(p) = allow_peers_ref.get_mut(&wg.public) {
 				// p.allow_ips = wg.ip;
-				let need_add_allow =wg.ip.iter().map(|x|IpNet::new(x.addr(), x.max_prefix_len()).unwrap()).filter(|x| ! p.allow_ips.contains(x)).collect::<HashSet<_>>();
+				let need_add_allow = wg
+					.ip
+					.iter()
+					.map(|x| IpNet::new(x.addr(), x.max_prefix_len()).unwrap())
+					.filter(|x| !p.allow_ips.contains(x))
+					.collect::<HashSet<_>>();
 				p.allow_ips.extend(need_add_allow);
 				p.allow_ips = p.allow_ips.drain(..).collect::<HashSet<_>>().into_iter().collect();
 				let old_ep = p.endpoint;
@@ -677,10 +679,10 @@ async fn wg_config_loop(
 							}
 						}
 						cur_ice_addr_ref.stun = pubaddr;
-						
-						
+
+
 					}
-					
+
 					if ! sended_port_map {
 						if let Ok(_) = portmap_tx.send(portmap::MapAction::AddMaps {
 							key: network_id,
@@ -898,7 +900,7 @@ pub fn start_daemon(config_dir: impl AsRef<Path> + Send + 'static) {
 /// Waits for a signal that requests a graceful shutdown, like SIGTERM or SIGINT.
 #[cfg(unix)]
 async fn wait_for_signal_impl() {
-	use tokio::signal::unix::{signal, SignalKind};
+	use tokio::signal::unix::{SignalKind, signal};
 
 	// Infos here:
 	// https://www.gnu.org/software/libc/manual/html_node/Termination-Signals.html

@@ -1,12 +1,12 @@
+use crate::raw;
+use crate::raw::RawUdpSocket;
+use crate::util::{IPADDRV4_UNSPECIFIED, IPADDRV6_UNSPECIFIED};
 use std::io;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace};
-use crate::raw;
-use crate::raw::RawUdpSocket;
-use crate::util::{IPADDRV4_UNSPECIFIED, IPADDRV6_UNSPECIFIED};
 
 pub(crate) struct EchoServer {
 	enable_udp: bool,
@@ -18,11 +18,8 @@ pub(crate) struct EchoServer {
 }
 
 fn new_ipv6_raw_socket(addr: SocketAddr) -> Result<RawUdpSocket, io::Error> {
-	let socket = socket2::Socket::new(
-		socket2::Domain::IPV6,
-		socket2::Type::RAW,
-		Some(socket2::Protocol::UDP),
-	).expect("cannot create raw socket");
+	let socket = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::RAW, Some(socket2::Protocol::UDP))
+		.expect("cannot create raw socket");
 
 	// socket.set_only_v6(true).expect("cannot set only ipv6");
 	raw::apply_bpf_filter(&socket, addr.port(), false).expect("cannot apply raw socket");
@@ -30,11 +27,7 @@ fn new_ipv6_raw_socket(addr: SocketAddr) -> Result<RawUdpSocket, io::Error> {
 	RawUdpSocket::new(socket, false)
 }
 fn new_ipv4_raw_socket(addr: SocketAddr) -> Result<RawUdpSocket, io::Error> {
-	let socket = socket2::Socket::new(
-		socket2::Domain::IPV4,
-		socket2::Type::RAW,
-		Some(socket2::Protocol::UDP),
-	)?;
+	let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::RAW, Some(socket2::Protocol::UDP))?;
 	raw::apply_bpf_filter(&socket, addr.port(), true)?;
 
 	RawUdpSocket::new(socket, true)

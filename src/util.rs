@@ -1,4 +1,5 @@
 use crate::config::InterfacePolicy;
+use crate::raw::AsByteSlice;
 use base64::Engine;
 use std::fmt::Display;
 use std::mem::MaybeUninit;
@@ -6,7 +7,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 use std::path::{Path, PathBuf};
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
-use crate::raw::AsByteSlice;
 
 pub const SOCKETADDRV4_UNSPECIFIED: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
 pub const SOCKETADDRV6_UNSPECIFIED: SocketAddr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0));
@@ -319,8 +319,10 @@ impl From<&[u8]> for Ipv6AddrC {
 		if value.len() != 16 {
 			panic!("Invalid IPv6 address length");
 		}
-		let mut addr:MaybeUninit<Ipv6AddrC> = MaybeUninit::uninit();
-		unsafe { addr.assume_init_mut().as_mut_slice().copy_from_slice(value); }
+		let mut addr: MaybeUninit<Ipv6AddrC> = MaybeUninit::uninit();
+		unsafe {
+			addr.assume_init_mut().as_mut_slice().copy_from_slice(value);
+		}
 		unsafe { addr.assume_init() }
 	}
 }

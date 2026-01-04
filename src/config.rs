@@ -1,6 +1,5 @@
 use crate::util;
 use base64::Engine;
-use tracing::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -8,6 +7,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::{error, fs, io};
+use tracing::error;
 use x25519_dalek::{PublicKey, StaticSecret};
 
 pub const DEFAULT_WG_PORT: u16 = 51820;
@@ -60,7 +60,6 @@ pub struct Discovery {
 	#[serde(skip_serializing_if = "Vec::is_empty")]
 	#[serde(default)]
 	pub static_ips: Vec<IpAddr>,
-
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]

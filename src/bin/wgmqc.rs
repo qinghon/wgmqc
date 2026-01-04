@@ -1,10 +1,10 @@
 use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 
-use tracing::{debug, error};
 use std::fs;
 use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
+use tracing::{debug, error};
 // use wgmqc::config::{Network, WgConfig};
 use wgmqc::*;
 
@@ -116,11 +116,8 @@ fn main() {
 		.with_max_level(tracing::Level::INFO)
 		.with_target(false)
 		.with_thread_ids(false)
-		.with_env_filter(
-			EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-		)
+		.with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
 		.init();
-
 
 	let args = Cli::parse();
 

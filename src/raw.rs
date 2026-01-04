@@ -110,33 +110,22 @@ pub fn apply_bpf_filter(sock: &Socket, port: u16, v4: bool) -> io::Result<()> {
 
 pub trait AsByteSlice {
 	fn as_slice(&self) -> &[u8]
-	where Self: Sized
+	where
+		Self: Sized,
 	{
-		unsafe {
-			core::slice::from_raw_parts(
-				(self as *const Self) as *const u8,
-				size_of::<Self>(),
-			)
-		}
+		unsafe { core::slice::from_raw_parts((self as *const Self) as *const u8, size_of::<Self>()) }
 	}
-	fn as_mut_slice(&mut self) -> &mut [u8] 
-	where Self: Sized {
-		unsafe {
-			core::slice::from_raw_parts_mut(
-				(self as *mut Self) as *mut u8,
-				size_of::<Self>()
-			)
-		}
+	fn as_mut_slice(&mut self) -> &mut [u8]
+	where
+		Self: Sized,
+	{
+		unsafe { core::slice::from_raw_parts_mut((self as *mut Self) as *mut u8, size_of::<Self>()) }
 	}
 	fn as_u16_slice(&self) -> &[u16]
-	where Self: Sized
+	where
+		Self: Sized,
 	{
-		unsafe {
-			core::slice::from_raw_parts(
-				(self as *const Self) as *const u16,
-				size_of::<Self>() / 2,
-			)
-		}
+		unsafe { core::slice::from_raw_parts((self as *const Self) as *const u16, size_of::<Self>() / 2) }
 	}
 }
 
@@ -146,7 +135,7 @@ pub struct UdpHdr {
 	sport: u16,
 	dport: u16,
 	len: u16,
-	chksum: u16
+	chksum: u16,
 }
 impl UdpHdr {
 	pub fn new(sport: u16, dport: u16, len: u16, chksum: u16) -> Self {
@@ -154,19 +143,18 @@ impl UdpHdr {
 			sport: sport.to_be(),
 			dport: dport.to_be(),
 			len: len.to_be(),
-			chksum: chksum.to_be()
+			chksum: chksum.to_be(),
 		}
 	}
 	pub fn from_buffer(raddr: &SocketAddr, saddr: &SocketAddr, buf: &[u8]) -> Self {
-
 		match (raddr, saddr) {
 			(SocketAddr::V4(raddr4), SocketAddr::V4(saddr4)) => {
 				let mut chksum = 0u32;
 
 				chksum += saddr4.ip().to_bits() & 0xffff;
-				chksum += saddr4.ip().to_bits()>> 16;
+				chksum += saddr4.ip().to_bits() >> 16;
 				chksum += raddr4.ip().to_bits() & 0xffff;
-				chksum += raddr4.ip().to_bits()>> 16;
+				chksum += raddr4.ip().to_bits() >> 16;
 				chksum += 17;
 				chksum += (buf.len() as u16 + size_of::<Self>() as u16) as u32;
 				chksum += saddr4.port() as u32;
@@ -175,7 +163,7 @@ impl UdpHdr {
 				for d in (0..buf.len() - (buf.len() & 1)).step_by(2) {
 					chksum += u16::from_be_bytes([buf[d], buf[d + 1]]) as u32;
 				}
-				
+
 				if (buf.len() & 1) != 0 {
 					chksum += ((buf[buf.len() - 1] as u16) << 8) as u32;
 				}
@@ -205,11 +193,11 @@ impl UdpHdr {
 				for i in (0..buf.len() - (buf.len() & 1)).step_by(2) {
 					chksum += u16::from_le_bytes([buf[i], buf[i + 1]]) as u32;
 				}
-				
+
 				if (buf.len() & 1) != 0 {
 					chksum += buf[buf.len() - 1] as u32;
 				}
-				
+
 				chksum = (chksum & 0xffff) + (chksum >> 16);
 				chksum = (chksum & 0xffff) + (chksum >> 16);
 				Self {
@@ -218,12 +206,11 @@ impl UdpHdr {
 					len: (buf.len() as u16 + 8u16).to_be(),
 					chksum: !(chksum as u16).to_be(),
 				}
-			},
-			(_,_) => {
+			}
+			(_, _) => {
 				panic!("no support as family not equal")
 			}
 		}
-
 	}
 	pub fn sport(&self) -> u16 {
 		self.sport.to_be()
@@ -242,7 +229,14 @@ impl AsByteSlice for UdpHdr {}
 
 impl fmt::Display for UdpHdr {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-		write!(f, "{}=>{} len:{} chksum: {:02x}", self.sport(), self.dport(), self.len(), self.chksum())
+		write!(
+			f,
+			"{}=>{} len:{} chksum: {:02x}",
+			self.sport(),
+			self.dport(),
+			self.len(),
+			self.chksum()
+		)
 	}
 }
 
@@ -265,7 +259,10 @@ impl AsyncSocket {
 			}
 		}
 	}
-	pub async fn recv_from_vectored(&self, bufs: &mut [MaybeUninitSlice<'_>],) -> std::io::Result<(usize, socket2::RecvFlags, socket2::SockAddr)> {
+	pub async fn recv_from_vectored(
+		&self,
+		bufs: &mut [MaybeUninitSlice<'_>],
+	) -> std::io::Result<(usize, socket2::RecvFlags, socket2::SockAddr)> {
 		loop {
 			let mut guard = self.inner.readable().await?;
 			match guard.try_io(|inner| inner.get_ref().recv_from_vectored(bufs)) {
@@ -295,17 +292,13 @@ impl AsyncSocket {
 }
 pub struct RawUdpSocket {
 	ipv4: bool,
-	inner: AsyncSocket
+	inner: AsyncSocket,
 }
 
 impl RawUdpSocket {
 	pub fn new(sock: socket2::Socket, ipv4: bool) -> io::Result<Self> {
-
 		let afd = AsyncSocket::new(sock)?;
-		Ok(Self {
-			ipv4,
-			inner: afd
-		})
+		Ok(Self { ipv4, inner: afd })
 	}
 	pub async fn send_to(&self, buf: &[u8], raddr: SocketAddr, saddr: SocketAddr) -> io::Result<usize> {
 		// trace!("raw send_to {} => {} len:{}", saddr, raddr, buf.len());
@@ -317,8 +310,7 @@ impl RawUdpSocket {
 		self.inner.send_to_vectored(&iovs, &sock_addr).await
 	}
 	pub async fn recv_from4(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, SocketAddr)> {
-		
-		let mut ipudp:[MaybeUninit<u8>; 8 + 20] = [MaybeUninit::uninit(); 8 + 20];
+		let mut ipudp: [MaybeUninit<u8>; 8 + 20] = [MaybeUninit::uninit(); 8 + 20];
 		let buf_ = unsafe { mem::transmute::<_, &mut [MaybeUninit<u8>]>(buf) };
 		let mut iovs = [MaybeUninitSlice::new(ipudp.as_mut_slice()), MaybeUninitSlice::new(buf_)];
 		let (size, _, _) = self.inner.recv_from_vectored(&mut iovs).await?;
@@ -329,16 +321,17 @@ impl RawUdpSocket {
 		let hdr_buf = unsafe { mem::transmute::<_, &[u8]>(&ipudp[0..]) };
 		let raddr = SocketAddrV4::new(
 			Ipv4Addr::new(hdr_buf[12], hdr_buf[13], hdr_buf[14], hdr_buf[15]),
-			u16::from_be_bytes([hdr_buf[20], hdr_buf[21]]));
+			u16::from_be_bytes([hdr_buf[20], hdr_buf[21]]),
+		);
 		let laddr = SocketAddrV4::new(
 			Ipv4Addr::new(hdr_buf[16], hdr_buf[17], hdr_buf[18], hdr_buf[19]),
-			u16::from_be_bytes([hdr_buf[22], hdr_buf[23]]));
+			u16::from_be_bytes([hdr_buf[22], hdr_buf[23]]),
+		);
 
 		Ok((size - 28, laddr.into(), raddr.into()))
 	}
 	pub async fn recv_from6(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr, SocketAddr)> {
-
-		let mut ipudp:[MaybeUninit<u8>; 8 + 40] = [MaybeUninit::uninit(); 8 + 40];
+		let mut ipudp: [MaybeUninit<u8>; 8 + 40] = [MaybeUninit::uninit(); 8 + 40];
 		let buf_ = unsafe { mem::transmute::<_, &mut [MaybeUninit<u8>]>(buf) };
 		let mut iovs = [MaybeUninitSlice::new(ipudp.as_mut_slice()), MaybeUninitSlice::new(buf_)];
 		let (size, _, _) = self.inner.recv_from_vectored(&mut iovs).await?;
@@ -346,17 +339,25 @@ impl RawUdpSocket {
 			return Err(io::Error::new(io::ErrorKind::InvalidData, "udp packet too short"));
 		}
 		let hdr_buf = unsafe { mem::transmute::<_, &[u8]>(&ipudp[0..]) };
-		let raddr = SocketAddrV6::new(Ipv6AddrC::from(&hdr_buf[8..24]).into(), 
-									  u16::from_be_bytes([hdr_buf[40], hdr_buf[41]]), 0, 0);
-		let laddr = SocketAddrV6::new(Ipv6AddrC::from(&hdr_buf[24..40]).into(),
-									  u16::from_be_bytes([hdr_buf[42], hdr_buf[43]]), 0, 0);
+		let raddr = SocketAddrV6::new(
+			Ipv6AddrC::from(&hdr_buf[8..24]).into(),
+			u16::from_be_bytes([hdr_buf[40], hdr_buf[41]]),
+			0,
+			0,
+		);
+		let laddr = SocketAddrV6::new(
+			Ipv6AddrC::from(&hdr_buf[24..40]).into(),
+			u16::from_be_bytes([hdr_buf[42], hdr_buf[43]]),
+			0,
+			0,
+		);
 		Ok((size - 48, laddr.into(), raddr.into()))
 	}
 	pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
 		if self.ipv4 {
 			let (len, _, raddr) = self.recv_from4(buf).await?;
 			Ok((len, raddr))
-		}else {
+		} else {
 			let (len, _, raddr) = self.recv_from6(buf).await?;
 			Ok((len, raddr))
 		}
@@ -372,7 +373,7 @@ mod tests {
 		pub daddr: Ipv4Addr,
 		pub rsv: u8,
 		pub proto: u8,
-		pub len: u16
+		pub len: u16,
 	}
 	impl AsByteSlice for PHdr {}
 
@@ -411,7 +412,7 @@ mod tests {
 		let raddr = SocketAddrV4::new(rip, 3478).into();
 		let laddr = SocketAddrV4::new(lip, 51821).into();
 
-		let buffer = [0;9];
+		let buffer = [0; 9];
 		let udp = UdpHdr::from_buffer(&raddr, &laddr, &buffer);
 		println!("{}", udp);
 		let phdr = PHdr {
@@ -457,8 +458,8 @@ mod tests {
 		for d in udp.as_u16_slice() {
 			csum += (*d).to_be() as u32;
 		}
-		println!("{:?}", unsafe {mem::transmute::<[u8;32], [u16;16]>(buffer)});
-		for d in unsafe {mem::transmute::<[u8;32], [u16;16]>(buffer)} {
+		println!("{:?}", unsafe { mem::transmute::<[u8; 32], [u16; 16]>(buffer) });
+		for d in unsafe { mem::transmute::<[u8; 32], [u16; 16]>(buffer) } {
 			csum += d.to_be() as u32;
 		}
 		csum = (csum & 0xffff) + (csum >> 16);
@@ -471,9 +472,8 @@ mod tests {
 		let lip = Ipv4Addr::new(127, 0, 0, 1);
 		let raddr = SocketAddrV4::new(rip, 47986).into();
 		let laddr = SocketAddrV4::new(lip, 51820).into();
-		
 
-		let buffer = [0,0,0x0a];
+		let buffer = [0, 0, 0x0a];
 		let udp = UdpHdr::from_buffer(&raddr, &laddr, &buffer);
 		println!("csum {:04X}", udp.chksum);
 
@@ -493,8 +493,9 @@ mod tests {
 		}
 		csum -= udp.chksum.to_be() as u32;
 		for d in buffer.chunks(2) {
-
-			csum += if d.len() ==2 { u16::from_be_bytes([d[0], d[1]]) as u32} else { 
+			csum += if d.len() == 2 {
+				u16::from_be_bytes([d[0], d[1]]) as u32
+			} else {
 				u16::from_be_bytes([d[0], 0]) as u32
 			};
 		}

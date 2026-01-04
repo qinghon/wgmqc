@@ -2,7 +2,6 @@ use crate::util;
 use crate::util::Key;
 use anyhow::Error;
 use igd_next::Gateway;
-use tracing::{debug, error, info, warn};
 pub(crate) use natpmp_ng::Protocol;
 use natpmp_ng::Response;
 use std::cmp::{max, min};
@@ -12,6 +11,7 @@ use std::time;
 use std::time::Duration;
 use tokio::io;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 const DEF_LEASE_DURATION: u32 = 7200u32;
 
@@ -172,15 +172,14 @@ async fn start_action_map(
 	private_addr: SocketAddr,
 	public_port: u16,
 ) -> Result<u16, Error> {
-	
 	if let Some(gw) = def_gw {
-		if let Ok(Ok(p)) = tokio::time::timeout(Duration::from_secs(2), start_action_map_pmp(
-			gw,
-			protocol,
-			private_addr,
-			public_port,
-		)).await {
-  				return Ok(p);
+		if let Ok(Ok(p)) = tokio::time::timeout(
+			Duration::from_secs(2),
+			start_action_map_pmp(gw, protocol, private_addr, public_port),
+		)
+		.await
+		{
+			return Ok(p);
 		}
 	}
 	if upnp_gw.is_some() {
