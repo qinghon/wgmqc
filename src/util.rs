@@ -37,7 +37,7 @@ pub fn new_key_pair() -> (String, String) {
 }
 
 pub fn base64_to_hex(s: &str) -> Option<String> {
-	let decoded = match base64::prelude::BASE64_STANDARD.decode(&s) {
+	let decoded = match base64::prelude::BASE64_STANDARD.decode(s) {
 		Ok(d) => d,
 		Err(_) => return None,
 	};
@@ -195,36 +195,36 @@ impl From<xeddsa::xed25519::PrivateKey> for Key {
 		Self(value.0)
 	}
 }
-impl Into<x25519_dalek::StaticSecret> for Key {
-	fn into(self) -> StaticSecret {
-		StaticSecret::from(self.0)
+impl From<Key> for x25519_dalek::StaticSecret {
+	fn from(val: Key) -> Self {
+		StaticSecret::from(val.0)
 	}
 }
-impl Into<x25519_dalek::PublicKey> for Key {
-	fn into(self) -> x25519_dalek::PublicKey {
-		x25519_dalek::PublicKey::from(self.0)
+impl From<Key> for x25519_dalek::PublicKey {
+	fn from(val: Key) -> Self {
+		x25519_dalek::PublicKey::from(val.0)
 	}
 }
-impl Into<xeddsa::xed25519::PublicKey> for Key {
-	fn into(self) -> xeddsa::xed25519::PublicKey {
-		xeddsa::xed25519::PublicKey(self.0)
+impl From<Key> for xeddsa::xed25519::PublicKey {
+	fn from(val: Key) -> Self {
+		xeddsa::xed25519::PublicKey(val.0)
 	}
 }
-impl Into<xeddsa::xed25519::PrivateKey> for Key {
-	fn into(self) -> xeddsa::xed25519::PrivateKey {
-		xeddsa::xed25519::PrivateKey(self.0)
+impl From<Key> for xeddsa::xed25519::PrivateKey {
+	fn from(val: Key) -> Self {
+		xeddsa::xed25519::PrivateKey(val.0)
 	}
 }
 
 pub struct Ipv6AddrC(pub Ipv6Addr);
 impl From<Ipv6Addr> for Ipv6AddrC {
 	fn from(value: Ipv6Addr) -> Self {
-		Self { 0: value }
+		Self(value)
 	}
 }
-impl Into<Ipv6Addr> for Ipv6AddrC {
-	fn into(self) -> Ipv6Addr {
-		self.0
+impl From<Ipv6AddrC> for Ipv6Addr {
+	fn from(val: Ipv6AddrC) -> Self {
+		val.0
 	}
 }
 impl Ipv6AddrC {

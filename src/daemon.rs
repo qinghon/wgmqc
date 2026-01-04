@@ -5,25 +5,24 @@ use crate::mq_msg::{MqMsg, MqMsgType};
 use crate::portmap;
 use crate::portmap::portmap_loop;
 use crate::stun::{stun_do_trans_raw};
-use crate::util::{Ipv6AddrC, IPADDRV4_UNSPECIFIED, IPADDRV6_UNSPECIFIED, SOCKETADDRV4_UNSPECIFIED};
+use crate::util::{Ipv6AddrC, IPADDRV4_UNSPECIFIED, SOCKETADDRV4_UNSPECIFIED};
 use crate::wg::WgIntf;
 use crate::*;
-use tracing::{debug, error, info, trace, warn};
-use rumqttc::{ConnectReturnCode, Event, Incoming, MqttOptions, Transport};
+use tracing::{debug, error, info, warn};
+
 use std::collections::{HashMap, HashSet};
-use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use ipnet::IpNet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener};
 use tokio::sync;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
-use crate::raw::RawUdpSocket;
+use crate::echo::EchoServer;
+use crate::mq_conn::MqConnect;
 
 enum NetworkMessage {
 	Add((PathBuf, WgConfig)),
@@ -54,343 +53,6 @@ pub(crate) enum WgCtrlMsg {
 
 pub(crate) type WgConfShare = Arc<arc_swap::ArcSwap<WgConfig>>;
 
-struct MqConnect {
-	client: rumqttc::AsyncClient,
-	event_loop: rumqttc::EventLoop,
-	netname: String,
-	prikey: x25519_dalek::StaticSecret,
-	admin_prikey: Option<x25519_dalek::StaticSecret>,
-	subcribe_path: String,
-}
-
-struct EchoServer {
-	enable_udp: bool,
-	enable_tcp: bool,
-	udp_socket: Option<RawUdpSocket>,
-	udp_socket6: Option<RawUdpSocket>,
-	tcp_listener: Option<TcpListener>,
-	tcp_listener6: Option<TcpListener>,
-}
-
-fn new_ipv6_raw_socket(addr: SocketAddr) -> Result<RawUdpSocket, io::Error> {
-	let socket = socket2::Socket::new(
-		socket2::Domain::IPV6,
-		socket2::Type::RAW,
-		Some(socket2::Protocol::UDP),
-	).expect("cannot create raw socket");
-
-	// socket.set_only_v6(true).expect("cannot set only ipv6");
-	raw::apply_bpf_filter(&socket, addr.port(), false).expect("cannot apply raw socket");
-
-	RawUdpSocket::new(socket, false)
-}
-fn new_ipv4_raw_socket(addr: SocketAddr) -> Result<RawUdpSocket, io::Error> {
-	let socket = socket2::Socket::new(
-		socket2::Domain::IPV4,
-		socket2::Type::RAW,
-		Some(socket2::Protocol::UDP),
-	)?;
-	raw::apply_bpf_filter(&socket, addr.port(), true)?;
-
-	RawUdpSocket::new(socket, true)
-}
-
-async fn tcp_steam_echo(mut stream: tokio::net::TcpStream, cancellation_token: CancellationToken) {
-	loop {
-		let mut read = [0; 1024];
-		tokio::select! {
-			recv = stream.read(&mut read) => {
-				match recv {
-				Ok(n) => {
-					if n == 0 {
-						break; // connection was closed
-					}
-					let _ = stream.write_all(&read[0..n]).await;
-				}
-				Err(_) => break,
-				}
-			},
-			_ = cancellation_token.cancelled() => break,
-		}
-	}
-}
-
-impl EchoServer {
-	pub(crate) async fn new(udp_port: u16, tcp_port: u16) -> Result<Self, io::Error> {
-		let (udp4, udp6) = if udp_port != 0 {
-			(
-				Some(new_ipv4_raw_socket(SocketAddr::new(IPADDRV4_UNSPECIFIED, udp_port)).expect("cannot bind4 udp")),
-				Some(new_ipv6_raw_socket(SocketAddr::new(IPADDRV6_UNSPECIFIED, udp_port)).expect("cannot bind6 udp")),
-			)
-		} else {
-			(None, None)
-		};
-		let (tcp4, tcp6) = if tcp_port != 0 {
-			(
-				Some(tokio::net::TcpListener::bind(SocketAddr::new(IPADDRV4_UNSPECIFIED, tcp_port)).await?),
-				Some(tokio::net::TcpListener::bind(SocketAddr::new(IPADDRV6_UNSPECIFIED, tcp_port)).await?),
-			)
-		} else {
-			(None, None)
-		};
-
-		Ok(Self {
-			enable_udp: udp_port != 0,
-			enable_tcp: tcp_port != 0,
-			udp_socket: udp4,
-			udp_socket6: udp6,
-			tcp_listener: tcp4,
-			tcp_listener6: tcp6,
-		})
-	}
-	pub(crate) fn get_udp_sock(&self) -> &Option<RawUdpSocket> {
-		&self.udp_socket
-	}
-	pub(crate) async fn start_udp_echo(
-		&self,
-		cancellation_token: &CancellationToken,
-		buf: &mut Box<[u8; 16384]>,
-	) -> Result<(), io::Error> {
-		// debug!("Starting udp echo server");
-		if !self.enable_udp {
-			_ = cancellation_token.cancelled().await;
-			return Ok(());
-		}
-		let udp_sock = &self.udp_socket;
-		let udp_sock6 = &self.udp_socket6;
-		let len = buf.len();
-		let (buf4, buf6) = buf.split_at_mut(len / 2);
-		tokio::select! {
-		udp4_recv = udp_sock.as_ref().unwrap().recv_from4(buf4) => {
-			match udp4_recv {
-				Err(e) => {
-					error!("udp recv error {}", e);
-				},
-				Ok((p, dst, src)) => {
-					trace!("udp recv from {}:{}", p, src);
-					if p > 0 {
-						let _ = udp_sock.as_ref().unwrap().send_to(&buf4[0..p], src, dst).await;
-					}
-				}
-			}
-		},
-		udp6_recv = udp_sock6.as_ref().unwrap().recv_from6(buf6) => {
-			match udp6_recv {
-				Err(e) => {
-					error!("udp recv error {}", e);
-				},
-				Ok((p, dst, src)) => {
-					trace!("udp recv from {}:{}", p, src);
-					if p > 0 {
-						let _ = udp_sock.as_ref().unwrap().send_to(&buf6[0..p], src, dst).await;
-					}
-				}
-			}
-		},
-			_ = cancellation_token.cancelled() => {},
-		}
-		Ok(())
-	}
-	pub(crate) async fn start_tcp_echo(&self, cancellation_token: &CancellationToken) -> Result<(), io::Error> {
-		if !self.enable_tcp {
-			cancellation_token.cancelled().await;
-			return Ok(());
-		}
-		loop {
-			tokio::select! {
-				Ok(x4) = self.tcp_listener.as_ref().unwrap().accept() => {
-					let ( stream, addr) = x4;
-					debug!("tcp connected from {}", addr);
-					tokio::spawn(tcp_steam_echo(stream, cancellation_token.clone()));
-				},
-				Ok(x6) = self.tcp_listener6.as_ref().unwrap().accept() => {
-					let ( stream, addr) = x6;
-					debug!("tcp connected from {}", addr);
-					tokio::spawn(tcp_steam_echo(stream, cancellation_token.clone()));
-				}
-				_ = cancellation_token.cancelled() => break,
-			}
-		}
-		Ok(())
-	}
-}
-
-impl MqConnect {
-	pub(crate) async fn new(config: WgConfig) -> Result<Self, io::Error> {
-		let netname = config.network.name.clone();
-		let subcribe_path;
-		let prikey;
-		let admin_prikey;
-		let mqttop;
-		{
-			let broker = config.network.broker.clone();
-			prikey =
-				x25519_dalek::StaticSecret::from(util::keystr_to_array(config.wg.private.as_ref().unwrap()).unwrap());
-			admin_prikey = if config.network.broker_admin_prikey.is_some() {
-				Some(x25519_dalek::StaticSecret::from(
-					util::keystr_to_array(config.network.broker_admin_prikey.clone().unwrap().as_str()).unwrap(),
-				))
-			} else {
-				None
-			};
-
-			let uri = match url::Url::parse(&broker) {
-				Ok(u) => u,
-				Err(e) => {
-					error!("cannot parse broker url \"{}\": {}", broker, e);
-					return Err(Error::new(ErrorKind::InvalidInput, "cannot parse broker url"));
-				}
-			};
-			// 兼容v2的配置23字符
-			let mut client_id = String::with_capacity(23);
-			client_id.push_str(&config.wg.public[0..16]);
-			client_id.push_str(&config.wg.public[37..]);
-
-			// rumqttc url解析有点问题
-			let port = uri.port().unwrap_or_else(|| match uri.scheme() {
-				"ws" => 80,
-				"wss" => 443,
-				"tcp" | "mqtt" => 1883,
-				"ssl" | "mqtts" => 8883,
-				_ => 1883,
-			});
-			let host = match uri.scheme() {
-				"ws" | "wss" => uri.clone().to_string(),
-				_ => uri.host().unwrap().to_string(),
-			};
-			let mut options = MqttOptions::new(client_id, host, port);
-			match uri.scheme() {
-				"wss" | "ssl" | "mqtts" => {
-					// todo: 支持自定义ca证书
-					options.set_transport(Transport::wss_with_default_config());
-				}
-				"ws" => {
-					options.set_transport(Transport::Ws);
-				}
-				_ => {}
-			}
-			options.set_keep_alive(Duration::from_secs(60));
-
-			if let Some(user) = config.network.mq_user.clone() {
-				options.set_credentials(user, config.network.mq_password.as_ref().clone().unwrap());
-			}
-			subcribe_path = util::base64_to_hex(&config.network.id).unwrap();
-			mqttop = options
-		};
-
-		let (client, eventloop) = rumqttc::AsyncClient::new(mqttop, 10);
-		debug!("mqt sub path: {}", subcribe_path);
-		loop {
-			match client.subscribe(&subcribe_path, rumqttc::QoS::AtLeastOnce).await {
-				Ok(_) => break,
-				Err(e) => {
-					error!("network {} subscribe err: {}", netname, e);
-				}
-			}
-		}
-		Ok(Self {
-			client,
-			event_loop: eventloop,
-			netname,
-			prikey,
-			admin_prikey,
-			subcribe_path,
-		})
-	}
-
-	pub(crate) fn mq_msg_process(&self, msg: mq_msg::MqMsg) -> Option<WgCtrlMsg> {
-		match msg.t {
-			MqMsgType::Sign(_) => None,
-			MqMsgType::Announce(v) => Some(WgCtrlMsg::Announce { wg: v.wg }),
-			MqMsgType::Update(v) => Some(WgCtrlMsg::UpdatePeer {
-				wg: v.wg,
-				endpoints: Some(v.endpoints),
-				traceroute: v.traceroute,
-			}),
-		}
-	}
-
-	pub(crate) async fn recvmsg(&mut self, cancellation_token: &CancellationToken) -> Option<WgCtrlMsg> {
-		loop {
-			tokio::select! {
-				_ = cancellation_token.cancelled() => return None,
-				event = self.event_loop.poll() => {
-					match event {
-						Ok(Event::Incoming(Incoming::ConnAck(ack))) => {
-							if ack.code == ConnectReturnCode::Success {
-								if let Err(e) = self.client.subscribe(self.subcribe_path.clone(), rumqttc::QoS::AtLeastOnce).await {
-									error!("cannot subscribe to {}: {}", self.subcribe_path, e);
-								}
-							}else {
-								warn!("Could not connect to mqtt broker: {:?}", ack.code);
-								tokio::time::sleep(Duration::from_secs(5)).await;
-							}
-						},
-						Ok(Event::Incoming(Incoming::Publish(msg))) => {
-							// debug!("recv other client: {:?}", msg);
-							let payload = msg.payload;
-
-							let data:MqMsg = match serde_json::from_slice(&payload) {
-								Ok(d) => d,
-								Err(e) => {
-									debug!("cannot parse payload \"{:?}\": {}", payload, e);
-									continue;
-								},
-							};
-								return self.mq_msg_process(data)
-						},
-
-						Ok(_) => {
-							continue;
-						},
-						Err(e) => {
-
-								error!("network {} poll err: {}", self.netname, e);
-								debug!("mqtt transport: {:?}", self.event_loop.mqtt_options);
-								self.event_loop.clean();
-								tokio::time::sleep(Duration::from_secs(1)).await;
-								continue;
-						}
-					}
-				},
-			}
-		}
-	}
-	pub(crate) async fn sendmsg(&mut self, mut msg: mq_msg::MqMsg) -> Result<(), io::Error> {
-		if msg.is_admin() {
-			if self.admin_prikey.is_some() {
-				msg.sign_data(self.admin_prikey.as_ref().unwrap());
-			} else {
-				error!("network {} no admin key, ignore admin msg send", self.netname);
-				debug!("network {} drop send {:?}", self.netname, msg);
-			}
-		} else {
-			msg.sign_data(&self.prikey);
-			debug!("network {} send mq msg {:?} ", self.netname, msg)
-		}
-
-		let data = match serde_json::to_string(&msg) {
-			Ok(d) => d,
-			Err(e) => {
-				error!("network {} cannot serialize send data {:?}: {}", self.netname, msg, e);
-				return Err(io::Error::new(io::ErrorKind::InvalidData, ""));
-			}
-		};
-		let start = Instant::now();
-		let ret = self.client.publish(&self.subcribe_path, rumqttc::QoS::AtMostOnce, false, data).await;
-		if ret.is_err() {
-				error!(
-					"network {} cannot push data {:?}: {}",
-					self.netname,
-					msg.t,
-					ret.unwrap_err()
-				);
-
-		}
-		debug!("network {} send msg time: {:?}", self.netname, start.elapsed());
-		Ok(())
-	}
-}
 
 async fn analyze_tcp_latency(addr: SocketAddr) -> Result<Duration, io::Error> {
 	let mut stream = match tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(addr)).await {
@@ -472,16 +134,14 @@ async fn analyze_ice_addrs(ice_addr: IceAddr, cancellation_token: CancellationTo
 			return vec![]
 		},
 	};
-	for x in res.into_iter() {
-		if let Ok(addr) = x {
-			debug!("addr test: {} latency={:?}", addr.0, addr.1);
-			new_ice_addr.push(addr);
-		}
-	}
+	for addr in res.into_iter().flatten() {
+ 			debug!("addr test: {} latency={:?}", addr.0, addr.1);
+ 			new_ice_addr.push(addr);
+ 		}
 
 	new_ice_addr.sort_by(|(_, al), (_, bl)| al.cmp(bl));
 
-	new_ice_addr.iter().map(|(addr, _)| addr.clone()).collect()
+	new_ice_addr.iter().map(|(addr, _)| *addr).collect()
 }
 
 fn update_ice_addr(ice_addr: &mut ice::IceAddr, intfs: &Vec<netdev::Interface>, cur_port: u16, discovery: &Discovery) {
@@ -522,7 +182,7 @@ fn update_ice_addr(ice_addr: &mut ice::IceAddr, intfs: &Vec<netdev::Interface>, 
 	}
 	for static_ip in &discovery.static_ips {
 		for port in &discovery.static_ports {
-			ice_addr.statics.push(SocketAddr::new(*static_ip, *port).into());
+			ice_addr.statics.push(SocketAddr::new(*static_ip, *port));
 		}
 	}
 }
@@ -709,20 +369,20 @@ async fn process_ctrl_msg(
 
 			allow_peers_ref.insert(wg.public.clone(), peer);
 			sync_peer_to_config(conf.clone(), allow_peers_ref);
-			sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
+			sync_wgintf(conf.clone(), wgapi, allow_peers_ref, ifname);
 		}
 		WgCtrlMsg::RemovePeer { pubkey } => {
 			let peer = allow_peers_ref.remove(&pubkey);
 			if peer.is_some() {
 				sync_peer_to_config(conf.clone(), allow_peers_ref);
 			}
-			sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
+			sync_wgintf(conf.clone(), wgapi, allow_peers_ref, ifname);
 			info!("remove peer {}", pubkey);
 		}
 		WgCtrlMsg::UpdatePeer {
 			wg,
 			endpoints,
-			traceroute,
+			traceroute: _,
 		} => {
 			debug!(
 				"network: {} update peer \"{}\" {:?} {:?}",
@@ -754,7 +414,7 @@ async fn process_ctrl_msg(
 				let need_add_allow =wg.ip.iter().map(|x|IpNet::new(x.addr(), x.max_prefix_len()).unwrap()).filter(|x| ! p.allow_ips.contains(x)).collect::<HashSet<_>>();
 				p.allow_ips.extend(need_add_allow);
 				p.allow_ips = p.allow_ips.drain(..).collect::<HashSet<_>>().into_iter().collect();
-				let old_ep = p.endpoint.clone();
+				let old_ep = p.endpoint;
 				let mut cur_endpoint = None;
 				let mut cur_last_handshake = Duration::MAX;
 				'bar1: {
@@ -800,7 +460,7 @@ async fn process_ctrl_msg(
 				return;
 			}
 			if need_sync {
-				sync_wgintf(conf.clone(), wgapi, allow_peers_ref, &ifname);
+				sync_wgintf(conf.clone(), wgapi, allow_peers_ref, ifname);
 				sync_peer_to_config(conf.clone(), allow_peers_ref);
 			}
 		}
@@ -990,7 +650,7 @@ async fn wg_config_loop(
 						for ip in cur_port_pubips.iter() {
 							for (port, _, proto) in ports.iter() {
 								if proto == &portmap::Protocol::UDP {
-									cur_ice_addr_ref.port_map.push(SocketAddr::new(ip.clone(), *port));
+									cur_ice_addr_ref.port_map.push(SocketAddr::new(*ip, *port));
 								}
 							}
 						}
@@ -1013,7 +673,7 @@ async fn wg_config_loop(
 					if nat_type != stun::StunType::Blocked && nat_type != stun::StunType::Symmetric {
 						for pub_ip in &pubaddr {
 							for static_port in &conf.load().discovery.static_ports {
-								cur_ice_addr_ref.statics.push(SocketAddr::new(pub_ip.ip(), *static_port).into());
+								cur_ice_addr_ref.statics.push(SocketAddr::new(pub_ip.ip(), *static_port));
 							}
 						}
 						cur_ice_addr_ref.stun = pubaddr;
@@ -1023,7 +683,7 @@ async fn wg_config_loop(
 					
 					if ! sended_port_map {
 						if let Ok(_) = portmap_tx.send(portmap::MapAction::AddMaps {
-							key: network_id.clone(),
+							key: network_id,
 							ports: vec![(cur_port, portmap::Protocol::UDP)],
 							intfs,
 							chan: portmap_event_tx.clone()
@@ -1092,7 +752,7 @@ async fn wg_config_loop(
 	// clean portmap
 	let _ = portmap_tx
 		.send(portmap::MapAction::AddMaps {
-			key: network_id.clone(),
+			key: network_id,
 			ports: vec![],
 			intfs: vec![],
 			chan: portmap_event_tx,

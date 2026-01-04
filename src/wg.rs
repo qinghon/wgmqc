@@ -13,10 +13,7 @@ pub(crate) fn keystr_to_key(s: &str) -> Option<defguard_wireguard_rs::key::Key> 
 			if p.len() != 32 {
 				return None;
 			}
-			match defguard_wireguard_rs::key::Key::try_from(p.as_slice()) {
-				Ok(k) => Some(k),
-				Err(_) => None,
-			}
+			defguard_wireguard_rs::key::Key::try_from(p.as_slice()).ok()
 		}
 		Err(_) => None,
 	}

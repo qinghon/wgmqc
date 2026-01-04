@@ -110,7 +110,7 @@ fn main() {
 	// The `Env` lets us tweak what the environment
 	// variables to read are and what the default
 	// value is if they're missing
-	use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+	use tracing_subscriber::{EnvFilter, prelude::*};
 	tracing_subscriber::fmt()
 		.compact()
 		.with_max_level(tracing::Level::INFO)
@@ -149,7 +149,7 @@ fn subcmd_subnet(config_dir: PathBuf, subnet: SubNet) {
 			mq_password,
 			allow_policy,
 			update_interval,
-			ip_cidr,
+			ip_cidr: _,
 			peer_name,
 			peer_ip,
 		} => {
@@ -204,7 +204,7 @@ fn subcmd_subnet(config_dir: PathBuf, subnet: SubNet) {
 				error!("cannot get network config");
 				std::process::exit(17);
 			}
-			let mut conf = dump.clone().unwrap().network.clone();
+			let mut conf = dump.unwrap().network.clone();
 			if !admin.unwrap_or(false) {
 				conf.broker_admin_prikey = None;
 			}

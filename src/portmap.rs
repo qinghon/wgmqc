@@ -66,7 +66,7 @@ impl NetEntry {
 	}
 	async fn try_to_map_port(&mut self, def_gw: &Option<IpAddr>, upnp_gw: &Option<Gateway>, pubip: &IpAddr) {
 		if self.private_ip.is_none() {
-			self.update_private_ip(def_gw.clone());
+			self.update_private_ip(*def_gw);
 			if self.private_ip.is_none() {
 				return;
 			}
@@ -81,7 +81,7 @@ impl NetEntry {
 		}
 		self.mapped_port.clear();
 		for (port, proto) in self.ports.iter() {
-			let try_pub_port = port.clone();
+			let try_pub_port = *port;
 			for off in 0..10 {
 				if try_pub_port + off == 0 {
 					continue;
@@ -89,7 +89,7 @@ impl NetEntry {
 				match tokio::time::timeout(
 					Duration::from_secs(3),
 					start_action_map(
-						def_gw.clone(),
+						*def_gw,
 						upnp_gw.clone(),
 						*proto,
 						SocketAddr::new(self.private_ip.unwrap(), *port),
@@ -158,7 +158,7 @@ async fn start_action_map_pmp(
 	match n.read_response_or_retry().await? {
 		Response::Gateway(p) => {
 			error!("read unexpected gateway response from nap-pmp: {:?}", p);
-			Err(io::Error::new(io::ErrorKind::Other, "read unexpected gateway response from nap-pmp").into())
+			Err(io::Error::other("read unexpected gateway response from nap-pmp").into())
 		}
 		Response::UDP(o) => Ok(o.public_port()),
 		Response::TCP(o) => Ok(o.public_port()),
@@ -194,12 +194,12 @@ async fn start_get_pubip_pmp(def_gw: IpAddr) -> Result<IpAddr, Error> {
 		return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid IP address").into());
 	};
 	let mut n = natpmp_ng::new_tokio_natpmp_with(ip4).await?;
-	let _ = n.send_public_address_request().await?;
+	n.send_public_address_request().await?;
 
 	debug!("waiting nat-pmp response");
 	let p = n.read_response_or_retry().await?;
 	match p {
-		Response::Gateway(p) => Ok(IpAddr::from(p.public_address().clone())),
+		Response::Gateway(p) => Ok(IpAddr::from(*p.public_address())),
 
 		_ => Err(Error::from(io::Error::new(
 			io::ErrorKind::AddrNotAvailable,
@@ -209,7 +209,7 @@ async fn start_get_pubip_pmp(def_gw: IpAddr) -> Result<IpAddr, Error> {
 }
 async fn start_get_pubip_upnp(upnp_gw: Option<Gateway>) -> Result<IpAddr, Error> {
 	let ipaddr = upnp_gw.clone().unwrap().get_external_ip()?;
-	Ok(IpAddr::from(ipaddr))
+	Ok(ipaddr)
 }
 
 async fn start_get_external_ip(def_gw: Option<IpAddr>, upnp_gw: Option<Gateway>) -> Result<IpAddr, Error> {
@@ -224,7 +224,7 @@ async fn start_get_external_ip(def_gw: Option<IpAddr>, upnp_gw: Option<Gateway>)
 	while let Some(res) = set.join_next().await {
 		match res {
 			Ok(Ok(p)) => {
-				return Ok(IpAddr::from(p));
+				return Ok(p);
 			}
 			Err(e) => {
 				error!("cannot get external ip: {}", e);
@@ -236,7 +236,7 @@ async fn start_get_external_ip(def_gw: Option<IpAddr>, upnp_gw: Option<Gateway>)
 }
 
 pub(crate) async fn portmap_loop(mut chan: tokio::sync::mpsc::Receiver<MapAction>, main_cancel: CancellationToken) {
-	let upnp_gw_fn = || igd_next::search_gateway(Default::default()).map_or_else(|_| None, |x| Some(x));
+	let upnp_gw_fn = || igd_next::search_gateway(Default::default()).map_or_else(|_| None, Some);
 	let def_gw_fn = || {
 		netdev::get_default_gateway().map_or_else(
 			|_| None,
@@ -333,7 +333,7 @@ pub(crate) async fn portmap_loop(mut chan: tokio::sync::mpsc::Receiver<MapAction
 						if entry.chan.is_closed() {
 							continue;
 						}
-						let _ = entry.chan.send(MapUpdate::Pubip(vec![pubip.clone()])).await;
+						let _ = entry.chan.send(MapUpdate::Pubip(vec![pubip])).await;
 					}
 				}
 			},
@@ -368,9 +368,9 @@ pub(crate) async fn portmap_loop(mut chan: tokio::sync::mpsc::Receiver<MapAction
 							private_ip: None,
 							chan
 						};
-						entry.update_private_ip(def_gw.clone());
+						entry.update_private_ip(def_gw);
 						if pubip != util::IPADDRV4_UNSPECIFIED {
-							let _ = entry.chan.send(MapUpdate::Pubip(vec![pubip.clone()])).await;
+							let _ = entry.chan.send(MapUpdate::Pubip(vec![pubip])).await;
 						}
 						port_maps.insert(key, entry);
 					}

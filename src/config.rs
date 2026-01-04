@@ -306,7 +306,7 @@ impl Display for AllowPolicy {
 	}
 }
 impl InterfacePolicy {
-	pub fn use_def_route(self: &Self) -> bool {
+	pub fn use_def_route(&self) -> bool {
 		self.interface.is_none() && self.block_interface_regex.is_none() && self.allow_interface_regex.is_none()
 	}
 }
@@ -341,7 +341,7 @@ pub fn verify_net_config(conf: &WgConfig) -> bool {
 			return false;
 		}
 
-		if !key_pair_is_valid(&conf.wg.public, &conf.wg.private.as_ref().unwrap()) {
+		if !key_pair_is_valid(&conf.wg.public, conf.wg.private.as_ref().unwrap()) {
 			return false;
 		}
 	}

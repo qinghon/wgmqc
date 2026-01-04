@@ -26,7 +26,7 @@ pub enum StunType {
 async fn stun_get_external_addr(udp: &UdpSocket, raddr: String) -> Result<SocketAddr, Error> {
 	info!("get raddr {}", raddr);
 
-	let stun_addr = raddr.to_socket_addrs()?.filter(|x| x.is_ipv4()).next();
+	let stun_addr = raddr.to_socket_addrs()?.find(|x| x.is_ipv4());
 	if stun_addr.is_none() {
 		return Err(io::Error::new(
 			io::ErrorKind::AddrNotAvailable,
@@ -35,7 +35,7 @@ async fn stun_get_external_addr(udp: &UdpSocket, raddr: String) -> Result<Socket
 	}
 	let stun_addr = stun_addr.unwrap();
 	let c = StunClient::new(stun_addr);
-	let f = c.query_external_address_async(&udp).await;
+	let f = c.query_external_address_async(udp).await;
 	match f {
 		Ok(addr) => Ok(addr),
 		Err(e) => Err(Error::new(e)),
@@ -76,7 +76,7 @@ pub async fn stun_do_trans(
 
 	for remote in raddr.into_iter() {
 		// test1
-		match stun_get_external_addr(&udp, remote).await {
+		match stun_get_external_addr(udp, remote).await {
 			Ok(pubaddr) => {
 				info!("pubaddr {}", pubaddr);
 				ok_num += 1;
@@ -231,7 +231,7 @@ pub async fn query_external_address_async(
 async fn stun_get_external_addr_raw(udp: &RawUdpSocket, local_port:u16, raddr: String) -> Result<(SocketAddr, SocketAddr), Error> {
 	info!("get raddr {}", raddr);
 
-	let stun_addr = raddr.to_socket_addrs()?.filter(|x| x.is_ipv4()).next();
+	let stun_addr = raddr.to_socket_addrs()?.find(|x| x.is_ipv4());
 	if stun_addr.is_none() {
 		return Err(io::Error::new(
 			io::ErrorKind::AddrNotAvailable,
@@ -247,10 +247,10 @@ async fn stun_get_external_addr_raw(udp: &RawUdpSocket, local_port:u16, raddr: S
 	
 	local_addr.set_port(local_port);
 	
-	let f = query_external_address_async(&udp, stun_addr, local_addr).await;
+	let f = query_external_address_async(udp, stun_addr, local_addr).await;
 	match f {
 		Ok(addr) => Ok((local_addr, addr)),
-		Err(e) => Err(e.into()),
+		Err(e) => Err(e),
 	}
 }
 
@@ -277,7 +277,7 @@ pub async fn stun_do_trans_raw(
 
 	for remote in raddr.into_iter() {
 		// test1
-		match stun_get_external_addr_raw(&udpsock, laddr.port(), remote).await {
+		match stun_get_external_addr_raw(udpsock, laddr.port(), remote).await {
 			Ok((local_addr, pubaddr)) => {
 				info!("pubaddr {}", pubaddr);
 				ok_num += 1;

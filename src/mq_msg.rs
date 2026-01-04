@@ -105,7 +105,7 @@ impl MqMsg {
 			return false;
 		}
 		let mut salt: [u8; 64] = [0; 64];
-		match base64::prelude::BASE64_STANDARD.decode_slice(&self.salt.as_ref().unwrap(), &mut salt) {
+		match base64::prelude::BASE64_STANDARD.decode_slice(self.salt.as_ref().unwrap(), &mut salt) {
 			Ok(_) => {}
 			Err(_) => return false,
 		}
