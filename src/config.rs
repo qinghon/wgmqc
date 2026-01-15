@@ -18,6 +18,8 @@ pub const DEFAULT_PUB_STUN_SERVERS: [&str; 4] = [
 	"stun1.l.google.com:19302",
 ];
 
+fn is_zero(val: &u32) -> bool {    *val == 0}
+
 #[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WgConfig {
 	#[serde(rename = "wg")]
@@ -184,7 +186,23 @@ pub struct Wg {
 	pub ip: Vec<ipnet::IpNet>,
 
 	#[serde(default)]
+	#[serde(skip_serializing_if = "is_zero")]
 	pub fwmark: u32,
+
+
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub pre_up: Option<Box<str>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub post_up: Option<Box<str>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub post_down: Option<Box<str>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub pre_down: Option<Box<str>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub peer_add: Option<Box<str>>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub peer_del: Option<Box<str>>,
+
 }
 
 impl WgConfig {
@@ -234,18 +252,16 @@ impl Wg {
 			public: pubkey,
 			private: Some(prikey),
 			port: DEFAULT_WG_PORT,
-			ip: vec![],
-			fwmark: 0,
+			..Default::default()
 		}
 	}
 	pub fn clone_to_share(&self) -> Wg {
 		Self {
 			name: self.name.clone(),
 			public: self.public.clone(),
-			private: None,
 			port: self.port,
 			ip: self.ip.clone(),
-			fwmark: 0,
+			..Default::default()
 		}
 	}
 }

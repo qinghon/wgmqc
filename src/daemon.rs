@@ -359,19 +359,22 @@ async fn process_ctrl_msg(
 			}
 			let peer = config::Peer {
 				key: wg.public.clone(),
-				name: wg.name,
+				name: wg.name.clone(),
 				endpoint,
 				allow_ips: wg.ip.iter().map(|x| IpNet::new(x.addr(), x.max_prefix_len()).unwrap()).collect(),
 				..Default::default()
 			};
 
-			allow_peers_ref.insert(wg.public.clone(), peer);
+			allow_peers_ref.insert(wg.public.clone(), peer.clone());
 			sync_peer_to_config(conf.clone(), allow_peers_ref);
 			sync_wgintf(conf.clone(), wgapi, allow_peers_ref, ifname);
+
+			wg.run_peer_add(ifname, &peer);
 		}
 		WgCtrlMsg::RemovePeer { pubkey } => {
-			let peer = allow_peers_ref.remove(&pubkey);
-			if peer.is_some() {
+			if let Some(peer) = allow_peers_ref.remove(&pubkey) {
+				let wg = conf.clone().load().wg.clone();
+				wg.run_peer_del(ifname, &peer);
 				sync_peer_to_config(conf.clone(), allow_peers_ref);
 			}
 			sync_wgintf(conf.clone(), wgapi, allow_peers_ref, ifname);
@@ -528,7 +531,11 @@ async fn wg_config_loop(
 
 	let network_policy = wg_config.network.interface_policy.clone().unwrap_or_default();
 
+
+	wg_config.wg.run_pre_up(&ifname);
+
 	let wgapi: Arc<Mutex<Option<WgIntf>>> = Arc::new(Mutex::new(None));
+	wg_config.wg.run_post_up(&ifname);
 
 	let self_pubkey = wg_config.wg.public.clone();
 	let network_id: util::Key = util::keystr_to_array(&wg_config.network.id).unwrap().into();
@@ -578,17 +585,6 @@ async fn wg_config_loop(
 	} else {
 		None
 	};
-	// if support_udp_mode {
-	// 	let ret = bpf_sender
-	// 		.as_ref()
-	// 		.unwrap()
-	// 		.send(create_bpf_update_info(&network_id, &intfs, cur_port, cur_port + 1))
-	// 		.await;
-	// 	if ret.is_err() {
-	// 		error!("cannot send bpf_updateinfo to bpf_sender: {}", ret.unwrap_err());
-	// 	}
-	// 	tokio::time::sleep(Duration::from_millis(100)).await;
-	// }
 
 	let (mut pubaddr, mut nat_type) = stun_do_trans_raw(
 		SocketAddr::new(IPADDRV4_UNSPECIFIED, cur_port),
@@ -611,6 +607,9 @@ async fn wg_config_loop(
 	let mqtt_cancel = network_cancel.clone();
 
 	sync_wgintf(conf.clone(), wgapi.clone(), allow_peers_ref, &ifname);
+	for peer in allow_peers_ref.values() {
+		conf.load().wg.run_peer_add(&ifname, peer);
+	}
 
 	let (portmap_event_tx, mut portmap_rx) = tokio::sync::mpsc::channel::<portmap::MapUpdate>(2);
 	let mut cur_port_maps = vec![];
@@ -764,7 +763,9 @@ async fn wg_config_loop(
 	{
 		let wgapi_lock = wgapi.lock().unwrap();
 		if let Some(wgapi_) = wgapi_lock.as_ref() {
+			conf.load().wg.run_pre_down(&ifname);
 			let _ = wgapi_.remove();
+			conf.load().wg.run_post_down(&ifname);
 			info!("interface {} removed", ifname);
 		}
 	}

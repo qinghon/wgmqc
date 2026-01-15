@@ -1,10 +1,13 @@
-use crate::config::InterfacePolicy;
+
+use std::ffi::{OsStr, OsString};
+use crate::config::{InterfacePolicy, Peer, Wg};
 use crate::raw::AsByteSlice;
 use base64::Engine;
 use std::fmt::Display;
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::path::{Path, PathBuf};
+use tracing::{debug, error};
 use x25519_dalek::PublicKey;
 use x25519_dalek::StaticSecret;
 
@@ -160,6 +163,7 @@ const HEX_CHAR_LOOKUP: [char; 16] = [
 	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
 ];
 impl Key {
+
 	pub fn hex(&self) -> String {
 		let mut hex_string = String::with_capacity(self.0.len() * 2);
 		for byte in self.0.iter() {
@@ -325,6 +329,80 @@ impl From<&[u8]> for Ipv6AddrC {
 		}
 		unsafe { addr.assume_init() }
 	}
+}
+
+pub fn run_cmd(cmd: &str, envs: impl IntoIterator<Item = (impl AsRef<OsStr>, impl AsRef<OsStr>)>,)  {
+	use std::process::Command;
+
+	match Command::new("sh")
+		.arg("-c")
+		.arg(cmd)
+		.envs(envs)
+		.output() {
+		Ok(output) => {
+			if ! output.status.success() {
+				error!("run command failed: {}: {:?}", cmd, output);
+			} else {
+				let stdout = String::from_utf8_lossy(&output.stdout);
+				let stderr = String::from_utf8_lossy(&output.stderr);
+				debug!("stdout: {:?}", stdout);
+				debug!("stderr: {:?}", stderr);
+			}
+		}
+		Err(e) => error!("run command failed: {}", e),
+	}
+
+}
+
+impl Wg {
+	pub fn run_pre_up(&self, ifname: &str)  {
+		if let Some(pre_up) = &self.pre_up {
+			let cmd = pre_up.replace("%i", ifname);
+			run_cmd(&cmd, Vec::<(&str,&str)>::new());
+		}
+	}
+	pub fn run_post_up(&self, ifname: &str)  {
+		if let Some(pre_up) = &self.post_up {
+			let cmd = pre_up.replace("%i", ifname);
+			run_cmd(&cmd, Vec::<(&str,&str)>::new());
+		}
+	}
+	pub fn run_pre_down(&self, ifname: &str)  {
+		if let Some(pre_up) = &self.pre_down {
+			let cmd = pre_up.replace("%i", ifname);
+			run_cmd(&cmd, Vec::<(&str,&str)>::new());
+		}
+	}
+	pub fn run_post_down(&self, ifname: &str)  {
+		if let Some(pre_up) = &self.post_down {
+			let cmd = pre_up.replace("%i", ifname);
+			run_cmd(&cmd, Vec::<(&str,&str)>::new());
+		}
+	}
+	pub fn run_peer_add(&self, ifname: &str, peer: &Peer)  {
+		let envs = build_envs_from_peer(peer);
+
+		if let Some(pre_up) = &self.peer_add {
+			let cmd = pre_up.replace("%i", ifname);
+			run_cmd(&cmd, envs);
+		}
+	}
+	pub fn run_peer_del(&self, ifname: &str, peer: &Peer)  {
+		let envs = build_envs_from_peer(peer);
+		if let Some(pre_up) = &self.peer_del {
+			let cmd = pre_up.replace("%i", ifname);
+			run_cmd(&cmd, envs);
+		}
+	}
+}
+
+fn build_envs_from_peer(peer: &Peer) -> Vec<(String, String)> {
+	let mut envs = vec![];
+	envs.push(("PEER_KEY".into(), peer.key.clone()));
+	envs.push(("PEER_NAME".into(), peer.name.clone().unwrap_or_default()));
+	envs.push(("PEER_ENDPOINT".into(), peer.endpoint.map(|addr| addr.to_string()).unwrap_or_default()));
+	envs.push(("PEER_ALLOW_IPS".into(), peer.allow_ips.iter().map(|addr| addr.to_string()).collect::<Vec<_>>().join(",")));
+	envs
 }
 
 #[cfg(test)]

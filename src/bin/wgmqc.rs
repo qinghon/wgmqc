@@ -110,7 +110,7 @@ fn main() {
 	// The `Env` lets us tweak what the environment
 	// variables to read are and what the default
 	// value is if they're missing
-	use tracing_subscriber::{EnvFilter, prelude::*};
+	use tracing_subscriber::{EnvFilter};
 	tracing_subscriber::fmt()
 		.compact()
 		.with_max_level(tracing::Level::INFO)
