@@ -345,8 +345,7 @@ pub fn run_cmd(cmd: &str, envs: impl IntoIterator<Item = (impl AsRef<OsStr>, imp
 			} else {
 				let stdout = String::from_utf8_lossy(&output.stdout);
 				let stderr = String::from_utf8_lossy(&output.stderr);
-				debug!("stdout: {:?}", stdout);
-				debug!("stderr: {:?}", stderr);
+				debug!("run_cmd: stdout: {:?} stderr: {:?}", stdout, stderr);
 			}
 		}
 		Err(e) => error!("run command failed: {}", e),
@@ -357,24 +356,28 @@ pub fn run_cmd(cmd: &str, envs: impl IntoIterator<Item = (impl AsRef<OsStr>, imp
 impl Wg {
 	pub fn run_pre_up(&self, ifname: &str)  {
 		if let Some(pre_up) = &self.pre_up {
+			debug!("run pre-up: {}", ifname);
 			let cmd = pre_up.replace("%i", ifname);
 			run_cmd(&cmd, Vec::<(&str,&str)>::new());
 		}
 	}
 	pub fn run_post_up(&self, ifname: &str)  {
 		if let Some(pre_up) = &self.post_up {
+			debug!("run post-up: {}", ifname);
 			let cmd = pre_up.replace("%i", ifname);
 			run_cmd(&cmd, Vec::<(&str,&str)>::new());
 		}
 	}
 	pub fn run_pre_down(&self, ifname: &str)  {
 		if let Some(pre_up) = &self.pre_down {
+			debug!("run pre-down: {}", ifname);
 			let cmd = pre_up.replace("%i", ifname);
 			run_cmd(&cmd, Vec::<(&str,&str)>::new());
 		}
 	}
 	pub fn run_post_down(&self, ifname: &str)  {
 		if let Some(pre_up) = &self.post_down {
+			debug!("run post-down: {}", ifname);
 			let cmd = pre_up.replace("%i", ifname);
 			run_cmd(&cmd, Vec::<(&str,&str)>::new());
 		}
@@ -383,6 +386,7 @@ impl Wg {
 		let envs = build_envs_from_peer(peer);
 
 		if let Some(pre_up) = &self.peer_add {
+			debug!("run peer-add: {}", ifname);
 			let cmd = pre_up.replace("%i", ifname);
 			run_cmd(&cmd, envs);
 		}
@@ -390,6 +394,7 @@ impl Wg {
 	pub fn run_peer_del(&self, ifname: &str, peer: &Peer)  {
 		let envs = build_envs_from_peer(peer);
 		if let Some(pre_up) = &self.peer_del {
+			debug!("run peer-del: {}", ifname);
 			let cmd = pre_up.replace("%i", ifname);
 			run_cmd(&cmd, envs);
 		}

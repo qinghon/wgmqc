@@ -532,10 +532,7 @@ async fn wg_config_loop(
 	let network_policy = wg_config.network.interface_policy.clone().unwrap_or_default();
 
 
-	wg_config.wg.run_pre_up(&ifname);
-
 	let wgapi: Arc<Mutex<Option<WgIntf>>> = Arc::new(Mutex::new(None));
-	wg_config.wg.run_post_up(&ifname);
 
 	let self_pubkey = wg_config.wg.public.clone();
 	let network_id: util::Key = util::keystr_to_array(&wg_config.network.id).unwrap().into();

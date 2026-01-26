@@ -33,7 +33,11 @@ impl WgIntf {
 		let wgapi = WGApi::new(ifname.to_string())?;
 		// Create host interfaces
 		wgapi.create_interface()?;
-
+		while ! netdev::get_interfaces().iter().any(|x| x.name.eq(&ifname)) {
+			std::thread::sleep(std::time::Duration::from_millis(10));
+			debug!("waiting for interface {ifname} create ");
+		}
+		wg.run_pre_up(ifname);
 		let def_peers = if let Some(peers) = peers {
 			peers
 				.iter()
@@ -60,6 +64,7 @@ impl WgIntf {
 		};
 
 		wgapi.configure_interface(&interface_config)?;
+		wg.run_post_up(ifname);
 		Ok(Self {
 			wgapi,
 			ifname: ifname.to_string(),
