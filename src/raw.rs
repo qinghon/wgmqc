@@ -31,7 +31,7 @@ pub fn apply_bpf_filter(sock: &Socket, port: u16, v4: bool) -> io::Result<()> {
 	// ld	M[0]
 	// and	#0xff000000
 	// rsh	#24
-	// jgt	#4	, good, bad
+	// jgt	#5	, good, bad
 	// good: ret #0x4000
 	// bad: ret #0
 	let v4_filter = sock_filters![
@@ -47,7 +47,7 @@ pub fn apply_bpf_filter(sock: &Socket, port: u16, v4: bool) -> io::Result<()> {
 		{ 0x60,  0,  0, 0000000000 },
 		{ 0x54,  0,  0, 0xff000000 },
 		{ 0x74,  0,  0, 0x00000018 },
-		{ 0x25,  0,  1, 0x00000004 },
+		{ 0x25,  0,  1, 0x00000005 },
 		{ 0x06,  0,  0, 0x00004000 },
 		{ 0x06,  0,  0, 0000000000 }
 	];
@@ -73,7 +73,7 @@ pub fn apply_bpf_filter(sock: &Socket, port: u16, v4: bool) -> io::Result<()> {
 	// ld	M[0]
 	// and	#0xff000000
 	// rsh	#24
-	// jgt	#4	, good, bad
+	// jgt	#5	, good, bad
 	// good: ret #0x4000
 	// bad: ret #0
 	let v6_filter = sock_filters![
@@ -97,7 +97,7 @@ pub fn apply_bpf_filter(sock: &Socket, port: u16, v4: bool) -> io::Result<()> {
 		{ 0x60,  0,  0, 0000000000 },
 		{ 0x54,  0,  0, 0xff000000 },
 		{ 0x74,  0,  0, 0x00000018 },
-		{ 0x25,  0,  1, 0x00000004 },
+		{ 0x25,  0,  1, 0x00000005 },
 		{ 0x06,  0,  0, 0x00004000 },
 		{ 0x06,  0,  0, 0000000000 }
 	];
